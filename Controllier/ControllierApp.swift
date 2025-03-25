@@ -6,12 +6,28 @@
 //
 
 import SwiftUI
+import MIDIKitIO
 
 @main
 struct ControllierApp: App {
+    
+    @State var midiManager = ObservableMIDIManager(
+        clientName: "ControllierMIDIManager",
+        model: "Controllier",
+        manufacturer: "JaredMcFarland"
+    )
+    
+    @State var midiHelper = MIDIHelper()
+    
+    init() {
+        midiHelper.setup(midiManager: midiManager)
+    }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(midiManager)
+                .environment(midiHelper)
         }
     }
 }
