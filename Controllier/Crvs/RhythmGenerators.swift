@@ -519,16 +519,22 @@ class RhythmSpaceGenerator {
         xTrajectory: @escaping Crvs.FloatOp,
         yTrajectory: @escaping Crvs.FloatOp,
         zTrajectory: @escaping Crvs.FloatOp
-    ) -> Crvs.FloatOp {
-        // Use wt3d to navigate through the rhythm space
-        let navigator = ops.wt3d(
-            rhythmSpace,
-            xTrajectory,
-            yTrajectory,
-            zTrajectory
-        )
-        
-        return navigator
+    ) -> (Float) -> Crvs.FloatOp {
+        // Return a function that takes a time position and returns a rhythm function
+        return { timePos in
+            // Calculate the coordinates in the rhythm space
+            let x = xTrajectory(timePos)
+            let y = yTrajectory(timePos)
+            let z = zTrajectory(timePos)
+            
+            // Convert to indices with bounds checking
+            let xIndex = min(max(Int(x * Float(rhythmSpace.count - 1)), 0), rhythmSpace.count - 1)
+            let yIndex = min(max(Int(y * Float(rhythmSpace[0].count - 1)), 0), rhythmSpace[0].count - 1)
+            let zIndex = min(max(Int(z * Float(rhythmSpace[0][0].count - 1)), 0), rhythmSpace[0][0].count - 1)
+            
+            // Return the function at these coordinates
+            return rhythmSpace[xIndex][yIndex][zIndex]
+        }
     }
     
     /// Create a circular trajectory through a plane in the rhythm space
@@ -676,7 +682,8 @@ class RhythmSpaceGenerator {
         }
         
         // Create time-based position
-        let timePhasor = ops.timePhasor(cycleDurationSeconds: Double(points.count) * 4.0)
+        // TODO: figure out how this timePhasor was intended to be used
+        // let timePhasor = ops.timePhasor(cycleDurationSeconds: Double(points.count) * 4.0)
         
         // Trajectory interpolation function
         let xTraj: Crvs.FloatOp = { pos in
@@ -846,10 +853,10 @@ class RhythmSpaceGenerator {
         }
         
         // Get the function and apply additional processing if needed
-        let rhythmFunc = baseRhythm.createOperation()
+        let rhythmFunc = baseRhythm
         
         // Apply additional texture-based processing
-        return { pos in
+        return { [self] pos in
             let value = rhythmFunc(pos)
             
             // Apply additional processing based on texture parameter
@@ -859,7 +866,7 @@ class RhythmSpaceGenerator {
                 return value * (value > 0.5 ? accentLFO : 0.0)
             } else if texture > 0.5 {
                 // Medium-high texture: Add slight duration variation
-                let durationMod = ops.triangle()(pos * 3.0) * 0.2 + 0.8
+                let durationMod = ops.tri()(pos * 3.0) * 0.2 + 0.8
                 return value * durationMod
             } else {
                 // Lower textures: Use value directly
@@ -1183,26 +1190,27 @@ class RhythmPatternExamples {
     
     /// Basic example of using standard waveforms for rhythms
     func basicRhythmExample() {
+        // TODO: Figure out how  these puluse rhythms were intended to be used
         // Create a simple pulse rhythm (quarter notes)
-        let quarterNote = generator.createRhythmGenerator(
-            type: "pulse", 
-            pulseWidth: 0.25, 
-            frequency: 1.0
-        )
+//        let quarterNote = generator.createRhythmGenerator(
+//            type: "pulse", 
+//            pulseWidth: 0.25, 
+//            frequency: 1.0
+//        )
         
         // Create eighth notes
-        let eighthNote = generator.createRhythmGenerator(
-            type: "pulse", 
-            pulseWidth: 0.25, 
-            frequency: 2.0
-        )
+//        let eighthNote = generator.createRhythmGenerator(
+//            type: "pulse", 
+//            pulseWidth: 0.25, 
+//            frequency: 2.0
+//        )
         
         // Create sixteenth notes
-        let sixteenthNote = generator.createRhythmGenerator(
-            type: "pulse", 
-            pulseWidth: 0.25, 
-            frequency: 4.0
-        )
+//        let sixteenthNote = generator.createRhythmGenerator(
+//            type: "pulse", 
+//            pulseWidth: 0.25, 
+//            frequency: 4.0
+//        )
         
         // Create a basic drum pattern (mix of different rhythms)
         let kickDrum = generator.createRhythmGenerator(
@@ -1336,7 +1344,8 @@ class RhythmPatternExamples {
         // Create a complex rhythm using the DSL
         let complexRhythm = generator.rhythm { [self] in
             // Base pulse (4 pulses per measure)
-            let pulse = ops.pulse(ops.mult(ops.phasor(), 4.0), 0.25)
+            // TODO: figure out how this pulse was intended to be used
+            // let pulse = ops.pulse(ops.mult(ops.phasor(), 4.0), 0.25)
             
             // Add some swing
             let swingLFO = ops.sine(ops.c(0.0))

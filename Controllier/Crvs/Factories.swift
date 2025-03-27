@@ -2,6 +2,12 @@ import Foundation
 
 // MARK: - Core Factory System
 
+// Define a typealias for a transformer that takes an escaping Crvs.FloatOp and returns a Crvs.FloatOp.
+typealias EscapingTransformer = (@escaping Crvs.FloatOp) -> Crvs.FloatOp
+
+// Define a typealias for a combiner that takes an OpFactory, two escaping Crvs.FloatOps and returns a Crvs.FloatOp.
+typealias EscapingCombiner = (OpFactory, @escaping Crvs.FloatOp, @escaping Crvs.FloatOp) -> Crvs.FloatOp
+
 /// Factory system that generates novel FloatOps through algorithmic composition
 class OpFactory {
     private let ops = Crvs.Ops()
@@ -9,15 +15,15 @@ class OpFactory {
     
     // Classification of available operations by category
     private let oscillators: [String: (OpFactory) -> Crvs.FloatOp]
-    private let modulators: [String: (OpFactory) -> Crvs.FloatOp]
-    private let shapers: [String: (OpFactory) -> Crvs.FloatOp]
-    private let combiners: [String: (OpFactory, Crvs.FloatOp, Crvs.FloatOp) -> Crvs.FloatOp]
+    private let modulators: [String: (OpFactory) -> EscapingTransformer]
+    private let shapers: [String: (OpFactory) -> EscapingTransformer]
+    private let combiners: [String: EscapingCombiner]
     
     /// Initialize with optional seed for reproducibility
     init(seed: UInt64? = nil) {
         // Create seeded RNG if seed provided, otherwise use system RNG
         if let seed = seed {
-            var seededGenerator = SeededGenerator(seed: seed)
+            let seededGenerator = SeededGenerator(seed: seed)
             self.rng = seededGenerator
         } else {
             self.rng = SystemRandomNumberGenerator()
@@ -44,31 +50,45 @@ class OpFactory {
         
         // Modulators (modify other operations)
         modulators = [
-            "phase": { factory in 
-                { op in factory.ops.phase(op, factory.randomFloatInRange(0.0...0.5)) }
+            "phase": { (factory: OpFactory) in
+                { (op: @escaping Crvs.FloatOp) -> Crvs.FloatOp in
+                    factory.ops.phase(op, factory.randomFloatInRange(0.0...0.5))
+                }
             },
-            "rate": { factory in 
-                { op in factory.ops.rate(op, factory.randomFloatInRange(0.5...2.0)) }
+            "rate": { (factory: OpFactory) in
+                { (op: @escaping Crvs.FloatOp) -> Crvs.FloatOp in
+                    factory.ops.rate(op, factory.randomFloatInRange(0.5...2.0))
+                }
             },
-            "bias": { factory in 
-                { op in factory.ops.bias(op, factory.randomFloatInRange(-0.2...0.2)) }
+            "bias": { (factory: OpFactory) in
+                { (op: @escaping Crvs.FloatOp) -> Crvs.FloatOp in
+                    factory.ops.bias(op, factory.randomFloatInRange(-0.2...0.2))
+                }
             },
-            "multiply": { factory in 
-                { op in factory.ops.mult(op, factory.randomFloatInRange(0.5...1.5)) }
+            "multiply": { (factory: OpFactory) in
+                { (op: @escaping Crvs.FloatOp) -> Crvs.FloatOp in
+                    factory.ops.mult(op, factory.randomFloatInRange(0.5...1.5))
+                }
             }
         ]
         
         // Shapers (transform the signal)
         shapers = [
-            "easeIn": { factory in factory.ops.easeIn(factory.randomFloatInRange(1.5...3.0)) },
-            "easeOut": { factory in factory.ops.easeOut(factory.randomFloatInRange(1.5...3.0)) },
-            "easeInOut": { factory in factory.ops.easeInOut(factory.randomFloatInRange(1.5...3.0)) },
-            "fold": { factory in 
+            "fold": { factory in
                 { op in factory.ops.fold(op, factory.randomFloatInRange(0.7...1.0)) }
             },
-            "abs": { factory in 
-                { op in factory.ops.abs(op) }
-            }
+            "wrap": { factory in
+                { op in factory.ops.wrap(op, factory.randomFloatInRange(0.0...0.3), factory.randomFloatInRange(0.6...1.0)) }
+            },
+            "lpf": { factory in
+                { op in factory.ops.lpf(op, factory.randomIntInRange(3...10)) }
+            },
+            "smooth": { factory in
+                { op in factory.ops.chain([op, factory.ops.smooth()]) }
+            },
+            "smoother": { factory in
+                { op in factory.ops.chain([op, factory.ops.smoother()]) }
+            },
         ]
         
         // Combiners (combine multiple operations)
@@ -79,7 +99,12 @@ class OpFactory {
             },
             "morph": { factory, opA, opB in 
                 factory.ops.morph(opA, opB, factory.ops.c(factory.randomFloatInRange(0.0...1.0)))
-            }
+            },
+            "sum": { factory, opA, opB in factory.ops.sum([opA, opB]) },
+            "chain": { factory, opA, opB in factory.ops.chain([opA, opB]) },
+            "min": { factory, opA, opB in factory.ops.min([opA, opB]) },
+            "max": { factory, opA, opB in factory.ops.max([opA, opB]) },
+            "choose": { factory, opA, opB in factory.ops.choose([opA, opB]) }
         ]
     }
     
@@ -107,13 +132,7 @@ class OpFactory {
             case 1:
                 // Apply a shaper
                 if let shaper = randomShaper() {
-                    // Some shapers take the op as an argument, others are applied to it
-                    if randomBool() {
-                        currentOp = shaper(currentOp)
-                    } else {
-                        let shaperOp = shaper
-                        currentOp = ops.chain([currentOp, shaperOp])
-                    }
+                    currentOp = shaper(currentOp)
                 }
             case 2:
                 // Combine with another operation
@@ -158,7 +177,7 @@ class OpFactory {
     }
     
     /// Generate a modulated version of an operation
-    public func generateModulatedOp(baseOp: Crvs.FloatOp, modulationType: String, amount: Float = 0.5) -> Crvs.FloatOp {
+    public func generateModulatedOp(baseOp: @escaping Crvs.FloatOp, modulationType: String, amount: Float = 0.5) -> Crvs.FloatOp {
         switch modulationType {
         case "phase":
             // Phase modulation with LFO
@@ -194,7 +213,7 @@ class OpFactory {
     }
     
     /// Get a random modulator function
-    private func randomModulator() -> ((Crvs.FloatOp) -> Crvs.FloatOp)? {
+    private func randomModulator() -> (EscapingTransformer)? {
         let modulatorNames = Array(modulators.keys)
         guard !modulatorNames.isEmpty else { return nil }
         
@@ -209,7 +228,7 @@ class OpFactory {
     }
     
     /// Get a random shaper function
-    private func randomShaper() -> ((Crvs.FloatOp) -> Crvs.FloatOp)? {
+    private func randomShaper() -> (EscapingTransformer)? {
         let shaperNames = Array(shapers.keys)
         guard !shaperNames.isEmpty else { return nil }
         
@@ -223,7 +242,6 @@ class OpFactory {
         return nil
     }
     
-    /// Get a random shaper as a standalone operation
     private func randomShaperOp() -> Crvs.FloatOp? {
         let shaperNames = Array(shapers.keys)
         guard !shaperNames.isEmpty else { return nil }
@@ -232,14 +250,15 @@ class OpFactory {
         let shaperName = shaperNames[randomIndex]
         
         if let shaperGenerator = shapers[shaperName] {
-            return shaperGenerator(self)
+            let transformer = shaperGenerator(self) // transformer: (Crvs.FloatOp) -> Crvs.FloatOp
+            return transformer(ops.phasor())
         }
         
         return nil
     }
     
     /// Get a random combiner function
-    private func randomCombiner() -> ((OpFactory, Crvs.FloatOp, Crvs.FloatOp) -> Crvs.FloatOp)? {
+    private func randomCombiner() -> (EscapingCombiner)? {
         let combinerNames = Array(combiners.keys)
         guard !combinerNames.isEmpty else { return nil }
         
@@ -527,7 +546,7 @@ class RhythmFactory {
     }
     
     /// Generate a swing rhythm with uneven subdivisions
-    private func generateSwingRhythm(density: Float, complexity: Float) -> Crvs.FloatOp {
+    func generateSwingRhythm(density: Float, complexity: Float) -> Crvs.FloatOp {
         // Base pulse count similar to straight rhythm
         let pulsesPerCycle = 1 + Int(density * 7) * 2  // Ensure even number for swing
         
@@ -538,25 +557,19 @@ class RhythmFactory {
         let swingDistortion = ops.bias(
             ops.mult(
                 ops.sine(ops.c(0.0)),
-                complexity * 0.15
+                swingAmount - 0.5  // Use the calculated swing amount
             ),
             ops.phasor()
         )
         
-        // Base pulse with swing applied
+        // Base pulse with swing applied (at a neutral rate)
         let swingPulse = ops.pulse(
             swingDistortion,
             0.3
         )
         
-        // Apply division to create rhythm
-        return ops.pulse(
-            ops.mult(
-                swingDistortion,
-                Float(pulsesPerCycle)
-            ),
-            0.3
-        )
+        // Return the swing pulse with the appropriate rate multiplication
+        return ops.rate(swingPulse, Float(pulsesPerCycle))
     }
     
     /// Generate a broken rhythm with irregular groupings
@@ -995,11 +1008,12 @@ class FactoryUsageExample {
         )
         
         // Generate a modulation pattern
-        let modulation = patternFactory.generateModulationPattern(
-            rate: 0.3,
-            depth: 0.7,
-            type: "smooth"
-        )
+        // TODO: incoporate modulation into demo
+//        let modulation = patternFactory.generateModulationPattern(
+//            rate: 0.3,
+//            depth: 0.7,
+//            type: "smooth"
+//        )
         
         // Generate a complete musical phrase
         let phrase = patternFactory.generateMusicalPhrase(
@@ -1029,6 +1043,94 @@ class FactoryUsageExample {
                 print("  Step \(i): Rest")
             }
         }
+    }
+    
+    func demonstratePatternFactory2() {
+        // Create rhythm generator instances
+        let rhythmGen = RhythmPatternGenerator()
+        let ops = Crvs.Ops()
+        
+        print("\n=== Pattern Factory Demonstration ===\n")
+        
+        // Basic parameters
+        let stepCount = 16
+        
+        // Create a modulation LFO for demonstrating parameter modulation
+        let modulation = ops.sine(ops.c(0.25))
+        
+        // Demonstrate basic patterns
+        print("Basic Pulse Pattern:")
+        let basicPulse = rhythmGen.createRhythmGenerator(type: "pulse", pulseWidth: 0.3, frequency: 4.0)
+        let basicPattern = rhythmGen.generateThresholdPattern(waveform: basicPulse, threshold: 0.5, stepCount: stepCount)
+        printPattern(basicPattern)
+        
+        print("\nEuclidean Pattern (5,16):")
+        let euclideanPattern = rhythmGen.generateEuclideanRhythm(pulses: 5, steps: 16)
+        printPattern(euclideanPattern)
+        
+        // Demonstrate modulation effects
+        print("\n=== Modulation Effects ===\n")
+        
+        // 1. Demonstrate phase modulation on the basic pulse pattern
+        print("Phase-Modulated Pulse Pattern:")
+        let phaseModulated = rhythmGen.modulateRhythm(
+            baseRhythm: basicPulse,
+            modulationOp: modulation,
+            modulationDepth: 0.2
+        )
+        let modulatedPattern = rhythmGen.generateThresholdPattern(
+            waveform: phaseModulated,
+            threshold: 0.5,
+            stepCount: stepCount
+        )
+        printPattern(modulatedPattern)
+        
+        // 2. Generate a time-varying pattern by sampling at different positions
+        print("\nTime-Varying Pattern (sampled at different positions):")
+        for t in stride(from: 0.0, to: 1.0, by: 0.25) {
+            let timeModulation = { (pos: Float) -> Float in
+                return modulation(pos + Float(t))
+            }
+            
+            let timeVaryingPattern = rhythmGen.modulateRhythm(
+                baseRhythm: basicPulse,
+                modulationOp: timeModulation,
+                modulationDepth: 0.3
+            )
+            
+            let pattern = rhythmGen.generateThresholdPattern(
+                waveform: timeVaryingPattern,
+                threshold: 0.5,
+                stepCount: stepCount
+            )
+            
+            print("Position \(String(format: "%.2f", t)): \(patternToString(pattern))")
+        }
+        
+        // 3. Demonstrate probability modulation
+        print("\nProbability-Modulated Pattern:")
+        let probabilityFunc = { (pos: Float) -> Float in
+            // Base probability varies with modulation
+            return 0.3 + (modulation(pos) * 0.4)
+        }
+        
+        let probPattern = rhythmGen.generateProbabilisticRhythm(
+            probabilityFunc: probabilityFunc,
+            steps: stepCount
+        )
+        printPattern(probPattern)
+        
+        print("\n=== End of Pattern Factory Demonstration ===\n")
+    }
+    
+    // Helper function to print a pattern
+    func printPattern(_ pattern: [Float]) {
+        print(patternToString(pattern))
+    }
+    
+    // Helper function to convert a pattern to a string
+    func patternToString(_ pattern: [Float]) -> String {
+        return pattern.map { $0 > 0.5 ? "X" : "." }.joined()
     }
 }
 
@@ -1115,6 +1217,13 @@ struct GenerativeMelody: GenerativeElement {
     }
 }
 
+struct EmptyGenerativeElement: GenerativeElement {
+    func generate(seed: UInt64?) -> Crvs.FloatOp {
+        // Identity operation: simply returns its input.
+        return { pos in pos }
+    }
+}
+
 /// Composition generator that combines generative elements
 class CompositionGenerator {
     private let seed: UInt64?
@@ -1146,22 +1255,10 @@ func demonstrateDSL() {
             complexity: 0.6
         )
         
-        // Modulation patterns
+        // Modulation pattern
         GenerativeModulation(rate: 0.3, depth: 0.7, type: "smooth")
         
-        // Conditional elements
-        if Bool.random() {
-            GenerativeRhythm("sparse", "euclidean")
-        }
-        
-        // Loop to create multiple elements
-        for i in 0..<3 {
-            GenerativeModulation(
-                rate: Float(i) * 0.2,
-                depth: 0.5,
-                type: "stepped"
-            )
-        }
+        Bool.random() ? GenerativeRhythm("sparse", "euclidean") as GenerativeElement : EmptyGenerativeElement()
     }
     
     // Generate the composition
@@ -1169,3 +1266,18 @@ func demonstrateDSL() {
     
     print("Generated \(generatedPatterns.count) patterns")
 }
+
+// Loop to create multiple elements:
+//        { () -> [GenerativeElement] in
+//            var results: [GenerativeElement] = []
+//            for i in 0..<3 {
+//                results.append(
+//                    GenerativeModulation(
+//                        rate: Float(i) * 0.2,
+//                        depth: 0.5,
+//                        type: "stepped"
+//                    )
+//                )
+//            }
+//            return results
+//        }()

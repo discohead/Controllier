@@ -152,21 +152,47 @@ public typealias Pulse = Square
 
 /// Phase modifier node
 public struct Phase: WaveformNode {
-    let phaseOffset: Float
+    let phaseOffsetValue: Float?
+    let phaseOffsetNode: WaveformNode?
     let input: WaveformNode?
     
+    // Constructor for constant phase offset
     public init(_ phaseOffset: Float, input: WaveformNode? = nil) {
-        self.phaseOffset = phaseOffset
+        self.phaseOffsetValue = phaseOffset
+        self.phaseOffsetNode = nil
+        self.input = input
+    }
+    
+    // New constructor for dynamic phase modulation
+    public init(_ phaseOffsetNode: WaveformNode, input: WaveformNode? = nil) {
+        self.phaseOffsetValue = nil
+        self.phaseOffsetNode = phaseOffsetNode
         self.input = input
     }
     
     public func createOperation() -> Crvs.FloatOp {
         let ops = Crvs.Ops()
         
-        if let input = input {
-            return ops.phase(input.createOperation(), phaseOffset)
+        let baseOp = input?.createOperation() ?? ops.phasor()
+        
+        if let phaseOffsetNode = phaseOffsetNode {
+            // Dynamic phase modulation
+            let phaseModOp = phaseOffsetNode.createOperation()
+            
+            return { pos in
+                // Calculate modulated position
+                let phaseOffset = phaseModOp(pos)
+                let modPos = fmod(pos + phaseOffset, 1.0)
+                
+                // Apply base operation at modulated position
+                return baseOp(modPos)
+            }
+        } else if let phaseOffsetValue = phaseOffsetValue {
+            // Constant phase offset
+            return ops.phase(baseOp, phaseOffsetValue)
         } else {
-            return ops.phase(ops.phasor(), phaseOffset)
+            // Default case (should not happen)
+            return baseOp
         }
     }
 }

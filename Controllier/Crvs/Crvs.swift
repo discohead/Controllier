@@ -354,6 +354,19 @@ public enum Crvs {
             }
         }
         
+        /// Pulse wave using a custom input signal and a variable width threshold.
+        public func pulse(_ input: @escaping FloatOp, _ width: @escaping FloatOp) -> FloatOp {
+            return { pos in
+                // Evaluate the custom input signal.
+                let signal = input(pos)
+                // Evaluate the width threshold.
+                let w = width(pos)
+                // Return 0.0 if the signal is below the width threshold, else 1.0.
+                return signal < w ? 0.0 : 1.0
+            }
+        }
+        
+        
         /// Square wave (50% duty cycle pulse)
         public func square() -> FloatOp {
             return pulse()
