@@ -167,7 +167,13 @@ public struct Sequence: ParameterizedNode {
     
     /// Creates a copy of this node with updated parameters
     public func copyWithParameters() -> Sequence {
-        return self
+        var newSequence = Sequence(steps: self.steps)
+        newSequence.activeSteps = self.activeSteps
+        newSequence.distribution = self.distribution
+        newSequence.rotate = self.rotate
+        newSequence.jitter = self.jitter
+        newSequence.swing = self.swing
+        return newSequence
     }
     
     /// Set the total number of steps in the sequence
@@ -378,7 +384,14 @@ public struct Modulator: ParameterizedNode {
     
     /// Creates a copy of this node with updated parameters
     public func copyWithParameters() -> Modulator {
-        return self
+        var newModulator = Modulator(self.input)
+        newModulator.type = self.type
+        newModulator.amount = self.amount
+        newModulator.rate = self.rate
+        newModulator.shape = self.shape
+        newModulator.bipolar = self.bipolar
+        newModulator.smooth = self.smooth
+        return newModulator
     }
     
     /// Set the modulation type
@@ -565,7 +578,14 @@ public struct PatternTransformer: ParameterizedNode {
     
     /// Creates a copy of this node with updated parameters
     public func copyWithParameters() -> PatternTransformer {
-        return self
+        var newTransformer = PatternTransformer(self.input)
+        newTransformer.transformation = self.transformation
+        newTransformer.factor = self.factor
+        newTransformer.mix = self.mix
+        newTransformer.feedback = self.feedback
+        newTransformer.invert = self.invert
+        newTransformer.threshold = self.threshold
+        return newTransformer
     }
     
     /// Set the transformation type
@@ -707,7 +727,13 @@ public struct DivMultClock: ParameterizedNode {
     
     /// Creates a copy of this node with updated parameters
     public func copyWithParameters() -> DivMultClock {
-        return self
+        var newClock = DivMultClock(division: self.division)
+        newClock.pulseWidth = self.pulseWidth
+        newClock.shift = self.shift
+        newClock.shuffle = self.shuffle
+        newClock.ratcheting = self.ratcheting
+        newClock.skipProbability = self.skipProbability
+        return newClock
     }
     
     /// Set the clock division factor
@@ -825,7 +851,14 @@ public struct Randomizer: ParameterizedNode {
     
     /// Creates a copy of this node with updated parameters
     public func copyWithParameters() -> Randomizer {
-        return self
+        var newRandomizer = Randomizer(density: self.density)
+        newRandomizer.seed = self.seed
+        newRandomizer.smooth = self.smooth
+        newRandomizer.fractal = self.fractal
+        newRandomizer.octaves = self.octaves
+        newRandomizer.correlationX = self.correlationX
+        newRandomizer.correlationY = self.correlationY
+        return newRandomizer
     }
     
     /// Set the density (probability) of active steps (0.0-1.0)
@@ -1055,7 +1088,13 @@ public struct PatternCombiner: ParameterizedNode {
     
     /// Creates a copy of this node with updated parameters
     public func copyWithParameters() -> PatternCombiner {
-        return self
+        var newCombiner = PatternCombiner(self.inputs)
+        newCombiner.mode = self.mode
+        newCombiner.weights = self.weights
+        newCombiner.threshold = self.threshold
+        newCombiner.smoothing = self.smoothing
+        newCombiner.logicalOp = self.logicalOp
+        return newCombiner
     }
     
     /// Set the combination mode

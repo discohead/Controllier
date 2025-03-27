@@ -6,41 +6,49 @@ import os.log
 import UIKit
 #endif
 
-
 /// Advanced memory management and threading optimizations for Crvs
 public class AdvancedOptimizations {
     
     // MARK: - Memory Pool Management
     
-    /// Memory pool for reusing sample buffers
+    /// Thread-safe memory pool for reusing sample buffers
     public class SampleBufferPool {
-        private let lock = NSLock()
-        private var pools: [Int: [UnsafeMutableBufferPointer<Float>]] = [:]
-        private let maxBuffersPerSize = 10
+        /// Class to manage buffer lifecycle
+        private class BufferStorage {
+            let buffer: [Float]
+            let capacity: Int
+            
+            init(capacity: Int) {
+                self.capacity = capacity
+                self.buffer = [Float](repeating: 0.0, count: capacity)
+            }
+        }
         
-        /// Get a buffer from the pool or create a new one
-        public func getBuffer(size: Int) -> UnsafeMutableBufferPointer<Float> {
+        private let lock = NSLock()
+        private var pools: [Int: [BufferStorage]] = [:]
+        private let maxBuffersPerSize = 10
+        private let logger = Logger(subsystem: "com.crvs.advanced", category: "BufferPool")
+        
+        /// Get a buffer of the specified size from the pool
+        public func getBuffer(size: Int) -> [Float] {
             lock.lock()
             defer { lock.unlock() }
             
             // Check if we have a cached buffer
             if var availableBuffers = pools[size], !availableBuffers.isEmpty {
-                let buffer = availableBuffers.removeLast()
+                let bufferStorage = availableBuffers.removeLast()
                 pools[size] = availableBuffers
                 
-                // Zero the memory before returning
-                buffer.initialize(repeating: 0.0)
-                return buffer
+                return bufferStorage.buffer
             }
             
             // Create a new buffer if none available
-            let pointer = UnsafeMutableBufferPointer<Float>.allocate(capacity: size)
-            pointer.initialize(repeating: 0.0)
-            return pointer
+            logger.debug("Creating new buffer of size \(size)")
+            return [Float](repeating: 0.0, count: size)
         }
         
-        /// Return a buffer to the pool
-        public func returnBuffer(_ buffer: UnsafeMutableBufferPointer<Float>) {
+        /// Return a buffer to the pool for future reuse
+        public func returnBuffer(_ buffer: [Float]) {
             let size = buffer.count
             
             lock.lock()
@@ -51,11 +59,9 @@ public class AdvancedOptimizations {
             
             // Add buffer to pool if we're under the limit
             if buffers.count < maxBuffersPerSize {
-                buffers.append(buffer)
+                buffers.append(BufferStorage(capacity: size))
                 pools[size] = buffers
-            } else {
-                // Too many in the pool, just deallocate
-                buffer.deallocate()
+                logger.debug("Returned buffer of size \(size) to pool. Pool now has \(buffers.count) buffers of this size.")
             }
         }
         
@@ -64,100 +70,71 @@ public class AdvancedOptimizations {
             lock.lock()
             defer { lock.unlock() }
             
-            // Deallocate all buffers
-            for (_, buffers) in pools {
-                for buffer in buffers {
-                    buffer.deallocate()
-                }
-            }
-            
+            // Clear all buffer references
             pools.removeAll()
-        }
-        
-        deinit {
-            drain()
+            logger.debug("Buffer pool drained")
         }
     }
     
     // MARK: - Thread-Safe Waveform Generator
     
     /// Thread-safe waveform processor that uses a thread pool for parallel processing
-    public class ThreadedWaveformProcessor {
+    @available(iOS 15.0, macOS 12.0, *)
+    public actor ThreadedWaveformProcessor {
         private let ops = Crvs.Ops()
-        private let bufferPool = SampleBufferPool()
-        private let processingQueue: DispatchQueue
         private let maxConcurrentTasks: Int
+        private let logger = Logger(subsystem: "com.crvs.advanced", category: "WaveformProcessor")
         
         public init(maxConcurrentTasks: Int = ProcessInfo.processInfo.activeProcessorCount) {
             self.maxConcurrentTasks = maxConcurrentTasks
-            self.processingQueue = DispatchQueue(label: "com.Crvs.processing", 
-                                               qos: .userInitiated, 
-                                               attributes: .concurrent)
         }
         
         /// Generate multiple waveforms in parallel
-        public func generateWaveforms(types: [String], 
-                                    params: [[String: Float]], 
-                                    count: Int,
-                                    completion: @escaping ([[Float]]) -> Void) {
-            
-            let group = DispatchGroup()
-            let resultLock = NSLock()
-            var results: [Int: [Float]] = [:]
-            
-            // Create a semaphore to limit concurrent tasks
-            let semaphore = DispatchSemaphore(value: maxConcurrentTasks)
+        public func generateWaveforms(types: [String],
+                                      params: [[String: Float]],
+                                      count: Int) async -> [[Float]] {
+            // Create tasks array
+            var tasks: [Task<[Float], Error>] = []
             
             // Process each waveform in parallel
             for (index, type) in types.enumerated() {
-                group.enter()
+                let waveformParams = index < params.count ? params[index] : [:]
                 
-                // Wait for a slot to become available
-                semaphore.wait()
+                let task = Task<[Float], Error> {
+                    try await generateWaveform(type: type, params: waveformParams, count: count)
+                }
+                tasks.append(task)
                 
-                processingQueue.async {
-                    let waveformParams = index < params.count ? params[index] : [:]
-                    
-                    // Get a buffer from the pool
-                    let buffer = self.bufferPool.getBuffer(size: count)
-                    
-                    // Generate the waveform
-                    self.fillBuffer(buffer: buffer, type: type, params: waveformParams)
-                    
-                    // Copy to a regular array
-                    let result = Array(buffer)
-                    
-                    // Return buffer to the pool
-                    self.bufferPool.returnBuffer(buffer)
-                    
-                    // Store the result
-                    resultLock.lock()
-                    results[index] = result
-                    resultLock.unlock()
-                    
-                    // Signal that a slot is available
-                    semaphore.signal()
-                    group.leave()
+                // Limit concurrent tasks if needed
+                if tasks.count >= maxConcurrentTasks {
+                    // Wait for a task to complete before continuing
+                    do {
+                        _ = try await tasks.first?.value
+                        tasks.removeFirst()
+                    } catch {
+                        logger.error("Error generating waveform: \(error.localizedDescription)")
+                    }
                 }
             }
             
-            // Notify when all waveforms are generated
-            group.notify(queue: .main) {
-                // Assemble results in the correct order
-                var orderedResults: [[Float]] = Array(repeating: [], count: types.count)
-                
-                for (index, result) in results {
-                    orderedResults[index] = result
+            // Collect all results
+            var results: [[Float]] = []
+            for task in tasks {
+                do {
+                    let waveform = try await task.value
+                    results.append(waveform)
+                } catch {
+                    logger.error("Error collecting waveform result: \(error.localizedDescription)")
+                    results.append([Float](repeating: 0, count: count))
                 }
-                
-                completion(orderedResults)
             }
+            
+            return results
         }
         
-        /// Fill a buffer with waveform data
-        private func fillBuffer(buffer: UnsafeMutableBufferPointer<Float>, 
-                               type: String, 
-                               params: [String: Float]) {
+        /// Generate a single waveform
+        private func generateWaveform(type: String, params: [String: Float], count: Int) async throws -> [Float] {
+            var result = [Float](repeating: 0, count: count)
             
             // Create operation based on type
             let op: Crvs.FloatOp
@@ -196,80 +173,83 @@ public class AdvancedOptimizations {
                 modulatedOp = op
             }
             
-            // Generate samples directly into the buffer
-            let count = buffer.count
+            // Generate samples with support for cooperative cancellation
             for i in 0..<count {
+                if Task.isCancelled { break }
+                
                 let pos = Float(i) / Float(count)
-                buffer[i] = modulatedOp(pos)
+                result[i] = modulatedOp(pos)
+                
+                // Yield periodically to prevent blocking the thread for too long
+                if i % 1000 == 0 { await Task.yield() }
             }
+            
+            return result
         }
     }
     
-    // MARK: - Lock-Free Processing
+    // MARK: - Triple Buffer Implementation
     
-    /// Lock-free sample processor for high-performance scenarios
-    public class LockFreeProcessor {
-        private let bufferPool = SampleBufferPool()
-        private var processingBuffers: [UnsafeMutableBufferPointer<Float>] = []
-        private var currentBufferIndex: UnsafeMutablePointer<Int32>
+    /// Thread-safe triple buffering system for real-time audio processing
+    public class TripleBuffer<T> {
+        private var buffers: [T]
+        private var writeIndex: Int = 0
+        private var readIndex: Int = 0
+        private let lock = NSLock()
         
-        public init(bufferCount: Int = 3, bufferSize: Int = 4096) {
-            // Allocate atomic counter for buffer index
-            currentBufferIndex = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-            currentBufferIndex.initialize(to: 0)
-            
-            // Allocate processing buffers
+        public init(bufferFactory: () -> T, bufferCount: Int = 3) {
+            // Create the initial buffers
+            var initialBuffers: [T] = []
             for _ in 0..<bufferCount {
-                let buffer = bufferPool.getBuffer(size: bufferSize)
-                processingBuffers.append(buffer)
+                initialBuffers.append(bufferFactory())
             }
+            self.buffers = initialBuffers
         }
         
-        /// Process samples with a lock-free triple buffer approach
-        public func processSamples(_ sampleBlock: (UnsafeMutableBufferPointer<Float>) -> Void) -> UnsafeBufferPointer<Float> {
-            // Get current buffer index atomically
-            let currentIndex = OSAtomicIncrement32Barrier(currentBufferIndex) % Int32(processingBuffers.count)
-            let buffer = processingBuffers[Int(currentIndex)]
+        /// Get a writable buffer
+        public func getWriteBuffer() -> T {
+            lock.lock()
+            defer { lock.unlock() }
             
-            // Process samples into the buffer
-            sampleBlock(buffer)
-            
-            // Return read-only view of the buffer
-            return UnsafeBufferPointer(buffer)
+            return buffers[writeIndex]
         }
         
-        /// Reset all buffers to zero
-        public func resetBuffers() {
-            for buffer in processingBuffers {
-                buffer.initialize(repeating: 0.0)
-            }
+        /// Mark the current write buffer as ready and advance to the next one
+        public func advanceWriteBuffer() {
+            lock.lock()
+            defer { lock.unlock() }
+            
+            // Advance to next buffer in circular fashion
+            writeIndex = (writeIndex + 1) % buffers.count
         }
         
-        deinit {
-            // Clean up all buffers
-            for buffer in processingBuffers {
-                bufferPool.returnBuffer(buffer)
-            }
+        /// Get the current read buffer
+        public func getReadBuffer() -> T {
+            lock.lock()
+            defer { lock.unlock() }
             
-            // Deallocate atomic counter
-            currentBufferIndex.deallocate()
+            // Use a buffer that's not currently being written to
+            let index = (writeIndex + 1) % buffers.count
+            readIndex = index
+            return buffers[index]
         }
     }
     
     // MARK: - Automatic Memory Management
     
     /// Automatic memory management for waveform operations
-    public class AutomaticMemoryManager {
-        private let memoryLogger = OSLog(subsystem: "com.Crvs", category: "MemoryManager")
+    public class MemoryManager {
+        private let logger = Logger(subsystem: "com.crvs.advanced", category: "MemoryManager")
         private let memoryWarningThreshold: Double = 0.8 // 80% of available memory
         private var lastCacheClear: Date = Date()
         private let minimumCacheClearInterval: TimeInterval = 5.0 // seconds
+        private let lock = NSLock()
         
         // Reference to caches that can be cleared
-        private let sampleCache: Crvs.LRUCache<String, [Float]>
-        private let paramCache: [String: Any]
+        private weak var sampleCache: AnyObject?
+        private weak var paramCache: AnyObject?
         
-        public init(sampleCache: Crvs.LRUCache<String, [Float]>, paramCache: [String: Any]) {
+        public init(sampleCache: AnyObject? = nil, paramCache: AnyObject? = nil) {
             self.sampleCache = sampleCache
             self.paramCache = paramCache
             
@@ -290,7 +270,7 @@ public class AdvancedOptimizations {
             let memoryUsage = getMemoryUsage()
             
             // Log memory usage
-            os_log("Memory usage: %.2f%%", log: memoryLogger, type: .debug, memoryUsage * 100)
+            logger.debug("Memory usage: \(memoryUsage * 100, privacy: .public)%")
             
             // Check if we need to clear caches
             if memoryUsage > memoryWarningThreshold {
@@ -300,27 +280,43 @@ public class AdvancedOptimizations {
         
         /// Handle memory warning notification
         @objc private func handleMemoryWarning() {
-            os_log("Memory warning received", log: memoryLogger, type: .error)
+            logger.warning("Memory warning received")
             clearCaches()
         }
         
         /// Clear caches if enough time has passed since last clear
         private func clearCachesIfNeeded() {
+            lock.lock()
+            defer { lock.unlock() }
+            
             let now = Date()
             if now.timeIntervalSince(lastCacheClear) > minimumCacheClearInterval {
-                clearCaches()
+                clearCachesInternal()
+                lastCacheClear = now
             }
         }
         
-        /// Clear all caches
-        private func clearCaches() {
-            os_log("Clearing caches", log: memoryLogger, type: .info)
+        /// Clear all caches immediately
+        public func clearCaches() {
+            lock.lock()
+            defer { lock.unlock() }
             
-            // Clear sample cache
-            sampleCache.clear()
-            
-            // Record the time
+            clearCachesInternal()
             lastCacheClear = Date()
+        }
+        
+        /// Internal implementation of cache clearing
+        private func clearCachesInternal() {
+            logger.info("Clearing caches")
+            
+            // Call clear methods on caches if available
+            if let cache = sampleCache as? CacheClearable {
+                cache.clear()
+            }
+            
+            if let cache = paramCache as? CacheClearable {
+                cache.clear()
+            }
         }
         
         /// Get current memory usage as a percentage
@@ -331,9 +327,9 @@ public class AdvancedOptimizations {
             let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
                 $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
                     task_info(mach_task_self_,
-                             task_flavor_t(MACH_TASK_BASIC_INFO),
-                             $0,
-                             &count)
+                              task_flavor_t(MACH_TASK_BASIC_INFO),
+                              $0,
+                              &count)
                 }
             }
             
@@ -354,75 +350,130 @@ public class AdvancedOptimizations {
     // MARK: - High-Priority Audio Thread Safety
     
     /// Thread-safe buffer for real-time audio processing
-    public class AudioThreadSafeBuffer {
-        private let buffer: UnsafeMutablePointer<Float>
-        private let size: Int
+    @available(iOS 15.0, macOS 12.0, *)
+    public actor AudioBufferProcessor {
+        private var buffer: [Float]
         private let underrunValue: Float
-        
-        private var writeIndex: UnsafeMutablePointer<Int32>
-        private var readIndex: UnsafeMutablePointer<Int32>
+        private var writePosition: Int = 0
+        private var readPosition: Int = 0
         
         public init(size: Int, underrunValue: Float = 0.0) {
-            self.size = size
+            self.buffer = [Float](repeating: underrunValue, count: size)
             self.underrunValue = underrunValue
-            
-            // Allocate circular buffer
-            buffer = UnsafeMutablePointer<Float>.allocate(capacity: size)
-            buffer.initialize(repeating: underrunValue, count: size)
-            
-            // Allocate atomic indices
-            writeIndex = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-            readIndex = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
-            writeIndex.initialize(to: 0)
-            readIndex.initialize(to: 0)
         }
         
         /// Write samples to the buffer (non-audio thread)
         public func write(_ samples: [Float]) {
-            let count = min(samples.count, size)
+            let count = min(samples.count, buffer.count)
             
-            // Get current write index atomically
-            let writePos = Int(OSAtomicAdd32Barrier(0, writeIndex))
-            
+            // Copy samples to the buffer at the current write position
             for i in 0..<count {
-                let bufferIndex = (writePos + i) % size
+                let bufferIndex = (writePosition + i) % buffer.count
                 buffer[bufferIndex] = samples[i]
             }
             
-            // Update write index atomically
-            OSAtomicAdd32Barrier(Int32(count), writeIndex)
+            // Update write position
+            writePosition = (writePosition + count) % buffer.count
         }
         
         /// Read samples from the buffer (audio thread)
-        public func read(into destination: UnsafeMutablePointer<Float>, count: Int) {
-            // Get indices atomically
-            let readPos = Int(OSAtomicAdd32Barrier(0, readIndex))
-            let writePos = Int(OSAtomicAdd32Barrier(0, writeIndex))
+        public func read(count: Int) -> [Float] {
+            var result = [Float](repeating: underrunValue, count: count)
             
             // Calculate available samples
-            let available = (writePos - readPos + size) % size
+            let available = (writePosition - readPosition + buffer.count) % buffer.count
             
             if available >= count {
                 // We have enough samples
                 for i in 0..<count {
-                    let bufferIndex = (readPos + i) % size
-                    destination[i] = buffer[bufferIndex]
+                    let bufferIndex = (readPosition + i) % buffer.count
+                    result[i] = buffer[bufferIndex]
                 }
                 
-                // Update read index atomically
-                OSAtomicAdd32Barrier(Int32(count), readIndex)
-            } else {
-                // Underrun - not enough samples available
-                for i in 0..<count {
-                    destination[i] = underrunValue
-                }
+                // Update read position
+                readPosition = (readPosition + count) % buffer.count
             }
+            
+            return result
         }
         
-        deinit {
-            buffer.deallocate()
-            writeIndex.deallocate()
-            readIndex.deallocate()
+        /// Reset the buffer
+        public func reset() {
+            writePosition = 0
+            readPosition = 0
+            buffer = [Float](repeating: underrunValue, count: buffer.count)
         }
+        
+        /// Get the number of available samples
+        public func availableSamples() -> Int {
+            return (writePosition - readPosition + buffer.count) % buffer.count
+        }
+    }
+}
+
+// MARK: - Supporting Protocols and Extensions
+
+/// Protocol for objects that can clear their caches
+public protocol CacheClearable {
+    func clear()
+}
+
+/// Extension for the legacy compatibility
+public class AudioThreadSafeBufferClassic {
+    private var buffer: [Float]
+    private let underrunValue: Float
+    private let size: Int
+    private let lock = NSLock()
+    
+    private var writePosition: Int = 0
+    private var readPosition: Int = 0
+    
+    public init(size: Int, underrunValue: Float = 0.0) {
+        self.size = size
+        self.underrunValue = underrunValue
+        self.buffer = [Float](repeating: underrunValue, count: size)
+    }
+    
+    /// Write samples to the buffer (non-audio thread)
+    public func write(_ samples: [Float]) {
+        let count = min(samples.count, size)
+        
+        lock.lock()
+        
+        // Copy samples to the buffer at the current write position
+        for i in 0..<count {
+            let bufferIndex = (writePosition + i) % size
+            buffer[bufferIndex] = samples[i]
+        }
+        
+        // Update write position
+        writePosition = (writePosition + count) % size
+        
+        lock.unlock()
+    }
+    
+    /// Read samples from the buffer (audio thread)
+    public func read(count: Int) -> [Float] {
+        var result = [Float](repeating: underrunValue, count: count)
+        
+        lock.lock()
+        
+        // Calculate available samples
+        let available = (writePosition - readPosition + size) % size
+        
+        if available >= count {
+            // We have enough samples
+            for i in 0..<count {
+                let bufferIndex = (readPosition + i) % size
+                result[i] = buffer[bufferIndex]
+            }
+            
+            // Update read position
+            readPosition = (readPosition + count) % size
+        }
+        
+        lock.unlock()
+        
+        return result
     }
 }

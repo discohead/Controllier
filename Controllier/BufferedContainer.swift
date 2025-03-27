@@ -7,11 +7,18 @@
 
 import Foundation
 
-/// A thread-safe double-buffered container that allows reading from one buffer while writing to another.
-/// Generic type T must be a collection type that provides `count` and subscript functionality.
-public class BufferedContainer<T> where T: Collection {
+/// A thread-safe double-buffered container that allows reading from one buffer
+/// while writing to another. Generic type T must be a collection type.
+@available(iOS 15.0, macOS 12.0, *)
+public actor BufferedContainer<T> where T: Collection {
     /// Type alias for the element type stored in collection T
     public typealias Element = T.Element
+    
+    /// The internal buffer storage
+    private var bufferedCache: [T]
+    
+    /// The index of the currently active buffer
+    private var currentCacheIndex: Int = 0
     
     /// Initialize with default values
     public init() where T: DefaultConstructible {
@@ -24,82 +31,120 @@ public class BufferedContainer<T> where T: Collection {
     }
     
     /// Access an element at the specified index from the current buffer
-    public subscript(index: Int) -> Element {
-        let currentCache = bufferedCache[currentCacheIndex.load(ordering: .acquiring)]
+    public func element(at index: Int) -> Element? {
+        let currentCache = bufferedCache[currentCacheIndex]
         
-        // Use the collection's startIndex and index advancing to safely access elements
-        var elementIndex = currentCache.startIndex
-        let targetIndex = index % currentCache.count
+        // Handle index safely to avoid out-of-bounds access
+        let safeIndex = index % currentCache.count
+        guard safeIndex >= 0 && currentCache.count > 0 else { return nil }
         
-        // Advance the index to the target position
-        for _ in 0..<targetIndex {
-            elementIndex = currentCache.index(after: elementIndex)
+        // Navigate to the desired index
+        var currentIndex = currentCache.startIndex
+        var currentPosition = 0
+        
+        while currentPosition < safeIndex && currentIndex != currentCache.endIndex {
+            currentIndex = currentCache.index(after: currentIndex)
+            currentPosition += 1
         }
         
-        return currentCache[elementIndex]
+        // Return the element if the index is valid
+        return currentIndex != currentCache.endIndex ? currentCache[currentIndex] : nil
     }
     
     /// Get the current buffer
     public func get() -> T {
-        return bufferedCache[currentCacheIndex.load(ordering: .acquiring)]
+        return bufferedCache[currentCacheIndex]
     }
     
     /// Set a new value to the inactive buffer and make it active
     public func set(_ value: T) {
-        let cacheIdx = currentCacheIndex.load(ordering: .acquiring) == 0 ? 1 : 0
-        bufferedCache[cacheIdx] = value
-        currentCacheIndex.store(cacheIdx, ordering: .releasing)
+        let inactiveIndex = currentCacheIndex == 0 ? 1 : 0
+        bufferedCache[inactiveIndex] = value
+        currentCacheIndex = inactiveIndex
     }
     
     /// Get the size of the current buffer
     public var size: Int {
-        return bufferedCache[currentCacheIndex.load(ordering: .acquiring)].count
+        return bufferedCache[currentCacheIndex].count
+    }
+}
+
+/// Non-actor version for compatibility with older iOS/macOS versions
+public class BufferedContainerClassic<T> where T: Collection {
+    /// Type alias for the element type stored in collection T
+    public typealias Element = T.Element
+    
+    /// The internal buffer storage
+    private var bufferedCache: [T]
+    
+    /// The index of the currently active buffer
+    private var currentCacheIndex: Int = 0
+    
+    /// Lock for thread safety
+    private let lock = NSLock()
+    
+    /// Initialize with default values
+    public init() where T: DefaultConstructible {
+        bufferedCache = [T(), T()]
     }
     
-    // MARK: - Private
+    /// Initialize with a specific value for both buffers
+    public init(value: T) {
+        bufferedCache = [value, value]
+    }
     
-    private var bufferedCache: [T]
-    private let currentCacheIndex = AtomicInteger(value: 0)
+    /// Access an element at the specified index from the current buffer
+    public func element(at index: Int) -> Element? {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let currentCache = bufferedCache[currentCacheIndex]
+        
+        // Handle index safely to avoid out-of-bounds access
+        let safeIndex = index % currentCache.count
+        guard safeIndex >= 0 && currentCache.count > 0 else { return nil }
+        
+        // Navigate to the desired index
+        var currentIndex = currentCache.startIndex
+        var currentPosition = 0
+        
+        while currentPosition < safeIndex && currentIndex != currentCache.endIndex {
+            currentIndex = currentCache.index(after: currentIndex)
+            currentPosition += 1
+        }
+        
+        // Return the element if the index is valid
+        return currentIndex != currentCache.endIndex ? currentCache[currentIndex] : nil
+    }
+    
+    /// Get the current buffer
+    public func get() -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return bufferedCache[currentCacheIndex]
+    }
+    
+    /// Set a new value to the inactive buffer and make it active
+    public func set(_ value: T) {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let inactiveIndex = currentCacheIndex == 0 ? 1 : 0
+        bufferedCache[inactiveIndex] = value
+        currentCacheIndex = inactiveIndex
+    }
+    
+    /// Get the size of the current buffer
+    public var size: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return bufferedCache[currentCacheIndex].count
+    }
 }
 
 /// Protocol for types that can be initialized with no parameters
 public protocol DefaultConstructible {
     init()
-}
-
-/// Simple atomic integer implementation using os_unfair_lock
-public class AtomicInteger {
-    private var lock = os_unfair_lock_s()
-    
-    public init(value: Int) {
-        self.value = value
-    }
-    
-    public func load(ordering: AtomicLoadOrdering) -> Int {
-        os_unfair_lock_lock(&lock)
-        defer { os_unfair_lock_unlock(&lock) }
-        return value
-    }
-    
-    public func store(_ desired: Int, ordering: AtomicStoreOrdering) {
-        os_unfair_lock_lock(&lock)
-        value = desired
-        os_unfair_lock_unlock(&lock)
-    }
-    
-    private var value: Int
-}
-
-/// Memory ordering for atomic loads
-public enum AtomicLoadOrdering {
-    case relaxed
-    case acquiring
-}
-
-/// Memory ordering for atomic stores
-public enum AtomicStoreOrdering {
-    case relaxed
-    case releasing
 }
 
 // MARK: - Standard Collection Types Conformance
