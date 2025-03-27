@@ -47,9 +47,43 @@
 		17EB8B5E2D9106E700E7B4FB /* LinkKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = LinkKit.xcframework; path = ../../../Downloads/LinkKit/LinkKit.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		17BCD2392D94F5D1005FE097 /* Exceptions for "Controllier" folder in "Controllier" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Crvs/Examples/CompilerOptimizationExamples.swift,
+				Crvs/Examples/CrvsExamples.swift,
+				Crvs/Examples/CrvsOptimizationExamples.swift,
+				Crvs/Examples/CrvsPlayground.swift,
+				Crvs/Examples/DebuggingGuide.swift,
+				Crvs/Examples/HowResultBuildersWork.swift,
+				Crvs/Examples/IntegrationGuide.swift,
+				Crvs/Examples/PlatformOptimizationExamples.swift,
+				Crvs/Examples/WaveformDSLExamples.swift,
+				Crvs/Examples/WaveformDSLTechniques.swift,
+				Crvs/Extensions/Waveforms.metal,
+			);
+			target = 17E07AAF2D91032F007CF845 /* Controllier */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		17BCD2412D94FB02005FE097 /* Exceptions for "Controllier" folder in "Copy Bundle Resources" phase from "Controllier" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 17E07AAE2D91032F007CF845 /* Resources */;
+			membershipExceptions = (
+				Crvs/Extensions/Waveforms.metal,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		17E07AB22D91032F007CF845 /* Controllier */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				17BCD2392D94F5D1005FE097 /* Exceptions for "Controllier" folder in "Controllier" target */,
+				17BCD2412D94FB02005FE097 /* Exceptions for "Controllier" folder in "Copy Bundle Resources" phase from "Controllier" target */,
+			);
 			path = Controllier;
 			sourceTree = "<group>";
 		};
