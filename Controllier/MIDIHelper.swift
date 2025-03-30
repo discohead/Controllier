@@ -21,6 +21,7 @@ import SwiftUI
         do {
             print("Starting MIDI services.")
             try midiManager.start()
+            print("MIDI ENDPOINTS: ")
             print(midiManager.endpoints)
         } catch {
             print("Error starting MIDI services:", error.localizedDescription)
@@ -37,7 +38,6 @@ import SwiftUI
     @Sendable private func inputEventsHandler(events: [MIDIEvent], timeStamp: CoreMIDITimeStamp, source: MIDIOutputEndpoint?) {
         for event in events {
             handleMIDI(event: event)
-            sendMidiEvent(event)
         }
     }
     
@@ -51,7 +51,7 @@ import SwiftUI
             
             print("Creating MIDI input connection.")
             try midiManager.addInputConnection(
-                to: .outputs(matching: [.name("iPad")]),
+                to: .outputs(matching: [.name("Electra Port 1")]),
                 tag: Self.inputConnectionName,
                 receiver: .events(options: [
                     .bundleRPNAndNRPNDataEntryLSB,
@@ -75,31 +75,31 @@ import SwiftUI
         midiManager?.managedOutputConnections[Self.outputConnectionName]
     }
     
-    func sendMidiEvent(_ event: MIDIEvent) {
+    func sendMidiEvent(_ event: MIDIEvent) throws {
         try? outputConnection?.send(event: event)
     }
     
-    func sendNoteOn() {
-        try? outputConnection?.send(event: .noteOn(
-            60,
-            velocity: .midi1(127),
-            channel: 0
+    func sendNoteOn(noteNum: UInt7, velocity: UInt7, channel: UInt4) {
+        try? sendMidiEvent(.noteOn(
+            noteNum,
+            velocity: .midi1(velocity),
+            channel: channel
         ))
     }
     
-    func sendNoteOff() {
-        try? outputConnection?.send(event: .noteOff(
-            60,
+    func sendNoteOff(noteNum: UInt7, channel: UInt4) {
+        try? sendMidiEvent(.noteOff(
+            noteNum,
             velocity: .midi1(0),
-            channel: 0
+            channel: channel
         ))
     }
     
-    func sendCC1() {
-        try? outputConnection?.send(event: .cc(
-            1,
-            value: .midi1(64),
-            channel: 0
+    func sendCC(ccNum: UInt7, value: UInt7, channel: UInt4) {
+        try? sendMidiEvent(.cc(
+            ccNum,
+            value: .midi1(value),
+            channel: channel
         ))
     }
     

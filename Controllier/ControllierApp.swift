@@ -19,8 +19,15 @@ struct ControllierApp: App {
     
     @State var midiHelper = MIDIHelper()
     
+    // Add the TimelineManager
+    @State var timelineManager = TimelineManager()
+    
     init() {
+        // Setup MIDI
         midiHelper.setup(midiManager: midiManager)
+        
+        // Connect timeline to MIDI helper
+        timelineManager.setMIDIHelper(midiHelper)
     }
     
     var body: some Scene {
@@ -28,6 +35,7 @@ struct ControllierApp: App {
             ContentView()
                 .environment(midiManager)
                 .environment(midiHelper)
+                .environment(timelineManager) // Make the timeline available to views
         }
     }
 }

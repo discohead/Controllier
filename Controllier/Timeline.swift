@@ -7,6 +7,15 @@
 
 import Foundation
 
+// Typealias for a closure that can be scheduled on the timeline
+public typealias ScheduledClosure = (GlobalState, ScheduledAction) -> Void
+
+// Typealias for a handler that can reschedule an action
+public typealias RescheduleHandler = (GlobalState, ScheduledAction) -> ScheduledAction?
+
+// Typealias for ScheduledAction condition closure
+public typealias ConditionClosure = () -> Bool
+
 /// A simple global state container. You can expand this with any properties you need.
 public class GlobalState {
     public var someParameter: Double = 0.0
@@ -15,95 +24,51 @@ public class GlobalState {
     public init() { }
 }
 
-// MARK: - Clock Protocol and InternalClock Implementation
-
-/// A protocol defining a clock source that drives tick events.
-public protocol Clock {
-    /// The number of ticks per beat (resolution).
-    var ticksPerBeat: Int { get set }
-    
-    /// The tempo in beats per minute.
-    var tempo: Double { get set }
-    
-    /// A closure that is called on every tick.
-    var tickHandler: (() -> Void)? { get set }
-    
-    /// Start the clock.
-    func start()
-    
-    /// Stop the clock.
-    func stop()
-}
-
-/// The default internal clock implementation using DispatchSourceTimer.
-class InternalClock: Clock {
-    var ticksPerBeat: Int
-    var tempo: Double {
-        didSet {
-            updateTickInterval()
-        }
-    }
-    var tickHandler: (() -> Void)?
-    
-    private let queue = DispatchQueue(label: "com.example.clock")
-    private var timer: DispatchSourceTimer?
-    private var tickInterval: DispatchTimeInterval
-    
-    /// Initializes an internal clock with the given ticks per beat and tempo.
-    ///
-    /// - Parameters:
-    ///   - ticksPerBeat: The number of ticks per beat (default 480, ~1ms resolution at 120 BPM).
-    ///   - tempo: The tempo in BPM (default 120 BPM).
-    init(ticksPerBeat: Int = 480, tempo: Double = 120.0) {
-        self.ticksPerBeat = ticksPerBeat
-        self.tempo = tempo
-        // Calculate tick interval: one beat = 60 / tempo seconds, divided by ticksPerBeat.
-        let beatDuration = 60.0 / tempo
-        let tickDuration = beatDuration / Double(ticksPerBeat)
-        self.tickInterval = DispatchTimeInterval.nanoseconds(Int(tickDuration * 1_000_000_000))
-    }
-    
-    /// Updates the tick interval when the tempo changes.
-    private func updateTickInterval() {
-        let beatDuration = 60.0 / tempo
-        let tickDuration = beatDuration / Double(ticksPerBeat)
-        self.tickInterval = DispatchTimeInterval.nanoseconds(Int(tickDuration * 1_000_000_000))
-        // In a production system, you might consider restarting the timer with the new interval.
-    }
-    
-    func start() {
-        timer = DispatchSource.makeTimerSource(queue: queue)
-        timer?.schedule(deadline: .now(), repeating: tickInterval, leeway: .microseconds(100))
-        timer?.setEventHandler { [weak self] in
-            self?.tickHandler?()
-        }
-        timer?.resume()
-    }
-    
-    func stop() {
-        timer?.cancel()
-        timer = nil
-    }
-}
-
+/// An action that can be scheduled to occur at a specific musical position
 public class ScheduledAction {
-    public var scheduledTime: TimeInterval
-    public let closure: (GlobalState, ScheduledAction) -> Void
-    public let condition: () -> Bool
+    /// The beat position when this action should execute
+    public var scheduledBeat: Double
+    
+    /// The code to execute when this action is triggered
+    public let closure: ScheduledClosure
+    
+    /// Optional condition that must be true for the action to execute
+    public let condition: ConditionClosure?
+    
+    /// Probability (0.0-1.0) that the action will execute
     public let probability: Double
+    
+    /// Execute only every Nth time this action is processed
     public let every: Int
+    
+    /// Counter for tracking executions
     public var counter: Int = 0
-    public var rescheduleHandler: ((GlobalState, ScheduledAction) -> ScheduledAction?)?
+    
+    /// Handler that can reschedule this action after execution
+    public var rescheduleHandler: RescheduleHandler?
+    
+    /// Custom state dictionary for this action
     public var state: [AnyHashable: Any]
     
-    public init(scheduledTime: TimeInterval,
-                state: [AnyHashable: Any] = [:],
-                condition: @escaping () -> Bool = { true },
-                probability: Double = 1.0,
-                every: Int = 1,
-                rescheduleHandler: ((GlobalState, ScheduledAction) -> ScheduledAction?)? = nil,
-                closure: @escaping (GlobalState, ScheduledAction) -> Void) {
-        self.scheduledTime = scheduledTime
+    /// Initialize a scheduled action with musical timing
+    /// - Parameters:
+    ///   - scheduledBeat: The musical beat position when this action should execute
+    ///   - state: Optional custom state to store with this action
+    ///   - condition: Optional condition that must be true for execution
+    ///   - probability: Probability (0.0-1.0) that the action will execute
+    ///   - every: Execute only every Nth time (default: 1 = every time)
+    ///   - rescheduleHandler: Optional handler for rescheduling
+    ///   - closure: The code to execute when triggered
+    public init(
+        scheduledBeat: Double,
+        state: [AnyHashable: Any] = [:],
+        condition: ConditionClosure?,
+        probability: Double = 1.0,
+        every: Int = 1,
+        rescheduleHandler: RescheduleHandler? = nil,
+        closure: @escaping ScheduledClosure
+    ) {
+        self.scheduledBeat = scheduledBeat
         self.state = state
         self.condition = condition
         self.probability = probability
@@ -113,67 +78,120 @@ public class ScheduledAction {
     }
 }
 
+/// Timeline for scheduling musical events in terms of beats
 public class Timeline {
-    var clock: Clock
+    /// Actions that are scheduled to execute
     private var actions: [ScheduledAction] = []
-    private var startTime: DispatchTime?
+    
+    /// Processed action IDs to prevent duplicates
+    private var processedActions: Set<ObjectIdentifier> = []
+    
+    /// Thread safety for timeline operations
     private let queue = DispatchQueue(label: "com.example.timeline")
     
-    /// The global state shared between the Timeline and its actions.
-    let globalState: GlobalState
+    /// The global state shared between the Timeline and its actions
+    public let globalState: GlobalState
     
-    public init(clock: Clock? = nil, globalState: GlobalState) {
-        self.clock = clock ?? InternalClock()
-        self.globalState = globalState
+    /// The current beat position in the timeline
+    private var _currentBeat: Double = 0.0
+    
+    /// Public access to the current beat position
+    public var currentBeat: Double {
+        get { _currentBeat }
     }
     
-    var currentTime: TimeInterval {
-        guard let start = startTime else { return 0 }
-        let now = DispatchTime.now()
-        return Double(now.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000.0
+    /// Initialize the timeline with an optional global state
+    /// - Parameter globalState: The global state to use (creates a new one if nil)
+    public init(globalState: GlobalState? = nil) {
+        self.globalState = globalState ?? GlobalState()
     }
     
-    public func start() {
-        startTime = DispatchTime.now()
-        clock.tickHandler = { [weak self] in
-            self?.queue.async {
-                self?.tick()
-            }
-        }
-        clock.start()
+    /// Update the current beat position
+    /// - Parameter beat: The new beat position
+    public func updateBeatPosition(_ beat: Double) {
+        _currentBeat = beat
+        processEventsAtCurrentBeat()
     }
     
-    public func stop() {
-        clock.stop()
-    }
-    
+    /// Schedule an action to execute at a specific beat
+    /// - Parameter action: The action to schedule
     public func schedule(action: ScheduledAction) {
         queue.async {
             self.actions.append(action)
-            self.actions.sort { $0.scheduledTime < $1.scheduledTime }
+            self.actions.sort { $0.scheduledBeat < $1.scheduledBeat }
         }
     }
     
-    private func tick() {
-        let now = currentTime
-        while let action = actions.first, action.scheduledTime <= now {
-            _ = actions.removeFirst()
-            action.counter += 1
-            if !action.condition() {
+    /// Process any events that are due to execute at the current beat position
+    public func processEventsAtCurrentBeat() {
+        queue.async {
+            self.processEvents()
+        }
+    }
+    
+    /// Process events up to the current beat position
+    private func processEvents() {
+        let currentBeatPosition = _currentBeat
+        
+        // Process actions that are due
+        while let firstAction = actions.first, firstAction.scheduledBeat <= currentBeatPosition {
+            let action = actions.removeFirst()
+            
+            // Skip if we've already processed this action
+            let actionId = ObjectIdentifier(action)
+            if processedActions.contains(actionId) {
                 continue
             }
+            
+            action.counter += 1
+            
+            // Check conditions for execution
+            if let condition = action.condition, !condition() {
+                continue
+            }
+            
             if action.counter % action.every != 0 {
                 continue
             }
+            
+            // Apply probability
             let roll = Double.random(in: 0.0...1.0)
             if roll <= action.probability {
                 action.closure(globalState, action)
+                processedActions.insert(actionId)
             }
+            
+            // Handle rescheduling if needed
             if let rescheduler = action.rescheduleHandler,
                let newAction = rescheduler(globalState, action) {
                 actions.append(newAction)
-                actions.sort { $0.scheduledTime < $1.scheduledTime }
+                actions.sort { $0.scheduledBeat < $1.scheduledBeat }
             }
+        }
+        
+        // Periodically clean up the processed actions set to prevent unbounded growth
+        if processedActions.count > 1000 {
+            processedActions.removeAll()
+        }
+    }
+    
+    /// Reset the timeline, clearing all scheduled actions
+    public func reset() {
+        queue.async {
+            self.actions.removeAll()
+            self.processedActions.removeAll()
+            self._currentBeat = 0.0
+        }
+    }
+    
+    /// Get a list of upcoming events for the next specified number of beats
+    /// - Parameter beats: Number of beats to look ahead
+    /// - Returns: Array of scheduled actions within the specified range
+    public func upcomingEvents(forBeats beats: Double) -> [ScheduledAction] {
+        let endBeat = _currentBeat + beats
+        
+        return actions.filter {
+            $0.scheduledBeat >= _currentBeat && $0.scheduledBeat < endBeat
         }
     }
 }
