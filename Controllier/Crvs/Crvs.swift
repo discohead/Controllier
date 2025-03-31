@@ -143,41 +143,113 @@ public enum Crvs {
         
         // MARK: - Time-Based Functions
         
-        /// Creates a phasor that cycles based on elapsed time
+        /// Creates a phasor that cycles based on elapsed time with maximum precision
         public func timePhasor(cycleDurationSeconds: Double = 2.0) -> FloatOp {
             if cycleDurationSeconds <= 0.0 {
                 fatalError("cycleDurationSeconds must be greater than 0")
             }
             
-            let cycleDurationMicros = cycleDurationSeconds * 1_000_000.0
-            let startTime = Date()
+            // Use CACurrentMediaTime() for high precision timing with low overhead
+            // This is based on mach_absolute_time() and is much more precise than Date()
+            let startTime = CACurrentMediaTime()
+            
+            var lastTime = startTime
+            var accumulatedPhase: Double = 0.0
+            let phaseIncrement = 1.0 / cycleDurationSeconds
             
             return { _ in
-                let elapsedMicros = Date().timeIntervalSince(startTime) * 1_000_000
-                return Float(fmod(elapsedMicros, cycleDurationMicros) / cycleDurationMicros)
+                // Get current time with high precision
+                let currentTime = CACurrentMediaTime()
+                
+                // Calculate time delta since last call
+                let deltaTime = currentTime - lastTime
+                lastTime = currentTime
+                
+                // Accumulate phase using precise time delta
+                accumulatedPhase += deltaTime * phaseIncrement
+                
+                // Keep phase in [0.0, 1.0) range without using fmod (which can lose precision)
+                while accumulatedPhase >= 1.0 {
+                    accumulatedPhase -= 1.0
+                }
+                
+                return Float(accumulatedPhase)
             }
         }
         
-        /// Creates a phasor that cycles based on musical tempo
-        public func tempoPhasor(barsPerCycle: Double = 1.0, bpm: Double = 120.0) -> FloatOp {
+        /// Creates a phasor that cycles based on musical tempo with enhanced musical features
+        public func tempoPhasor(
+            barsPerCycle: Double = 1.0,
+            bpm: Double = 120.0,
+            timeSignatureNumerator: Int = 4,   // Added time signature support
+            timeSignatureDenominator: Int = 4, // Added denominator for compound meters
+            startOffset: Double = 0.0          // Allows starting at specific phase point
+        ) -> FloatOp {
             if bpm <= 0.0 {
                 fatalError("bpm must be greater than 0")
             }
             if barsPerCycle <= 0.0 {
                 fatalError("barsPerCycle must be greater than 0")
             }
+            if timeSignatureNumerator <= 0 {
+                fatalError("timeSignatureNumerator must be greater than 0")
+            }
+            if ![1, 2, 4, 8, 16, 32].contains(timeSignatureDenominator) {
+                fatalError("timeSignatureDenominator must be a power of 2 (1, 2, 4, 8, 16, or 32)")
+            }
             
-            // Calculate the duration of one beat in seconds
-            let beatDurationSecs = 60.0 / bpm
+            // Calculate the duration of one beat in seconds based on time signature denominator
+            let beatDurationSecs = 60.0 / bpm * (4.0 / Double(timeSignatureDenominator))
             
-            // Assuming a 4/4 time signature, calculate the duration of one bar
-            let barDurationSecs = beatDurationSecs * 4
+            // Calculate the duration of one bar
+            let barDurationSecs = beatDurationSecs * Double(timeSignatureNumerator)
             
-            // Calculate the duration of the entire cycle (in seconds)
+            // Calculate the duration of the entire cycle
             let cycleDurationSecs = barDurationSecs * barsPerCycle
             
-            // Convert to time phasor
-            return timePhasor(cycleDurationSeconds: cycleDurationSecs)
+            // Track musical context
+            var currentBar = 0
+            var lastPhase: Double = 0
+            
+            // Create modified phasor with musical context tracking
+            let phasor = timePhasor(cycleDurationSeconds: cycleDurationSecs)
+            
+            return { pos in
+                let rawPhase = Double(phasor(pos))
+                let phaseWithOffset = (rawPhase + startOffset).truncatingRemainder(dividingBy: 1.0)
+                
+                // Track bar changes for possible beat events
+                if phaseWithOffset < lastPhase {
+                    currentBar = (currentBar + 1) % Int(barsPerCycle)
+                }
+                lastPhase = phaseWithOffset
+                
+                return Float(phaseWithOffset)
+            }
+        }
+        
+        /// Returns a quantized version of a phasor that snaps to musical divisions
+        public func quantizePhasor(phasor: @escaping FloatOp, divisions: Int = 4) -> FloatOp {
+            return { pos in
+                let rawPhase = phasor(pos)
+                let quantized = round(Float(divisions) * rawPhase) / Float(divisions)
+                return quantized
+            }
+        }
+        
+        /// Gets the current musical position information from a tempo phasor
+        public func musicalPosition(phasor: @escaping FloatOp,
+                                    barsPerCycle: Double = 1.0,
+                                    timeSignatureNumerator: Int = 4) -> (bar: Int, beat: Int, phase: Float) {
+            let phase = phasor(0)
+            // Convert timeSignatureNumerator to Double for multiplication with barsPerCycle
+            let totalBeats = Double(timeSignatureNumerator) * barsPerCycle
+            let normalizedPosition = Double(phase) * totalBeats
+            
+            let currentBar = Int(normalizedPosition / Double(timeSignatureNumerator))
+            let currentBeat = Int(normalizedPosition) % timeSignatureNumerator
+            
+            return (currentBar, currentBeat, phase)
         }
         
         // MARK: - Basic Waveforms
@@ -497,6 +569,46 @@ public enum Crvs {
             }
         }
         
+        /// Multi-stage envelope with arbitrary breakpoints
+        public func multiStageEnv(_ stages: [(duration: Float, level: Float)],
+                                  _ curve: Float = 2.0) -> FloatOp {
+            return { pos in
+                var totalDuration: Float = 0
+                
+                // Calculate total duration
+                for stage in stages {
+                    totalDuration += stage.duration
+                }
+                
+                // Find current stage
+                var currentTime: Float = pos * totalDuration
+                var prevStage: (time: Float, level: Float) = (0, stages.first?.level ?? 0)
+                
+                for stage in stages {
+                    let stageEnd = prevStage.time + stage.duration
+                    
+                    if currentTime <= stageEnd {
+                        // Found the current stage
+                        let stagePos = (currentTime - prevStage.time) / stage.duration
+                        
+                        // Apply curve
+                        let curvedPos = curve > 1 ?
+                        pow(stagePos, curve) :
+                        1 - pow(1 - stagePos, 1/curve)
+                        
+                        // Interpolate
+                        return prevStage.level + (stage.level - prevStage.level) * curvedPos
+                    }
+                    
+                    // Move to next stage
+                    prevStage = (stageEnd, stage.level)
+                }
+                
+                // Past all stages
+                return stages.last?.level ?? 0
+            }
+        }
+        
         // MARK: - Utility Functions
         
         /// Maps a value from one range to another
@@ -779,8 +891,8 @@ public enum Crvs {
                 // Compute the fractional part for the x axis
                 let xFrac = xPos - Float(xIndex)
                 
-                // Ensure index is within bounds
-                let xIndexNext = Swift.min(xIndex + 1, wTable.count - 1)
+                // Get next index with wrapping
+                let xIndexNext = (xIndex + 1) % wTable.count
                 
                 // Linear interpolation
                 return self.lerp(wTable[xIndex], wTable[xIndexNext], xFrac)
@@ -799,8 +911,8 @@ public enum Crvs {
                 // Compute the fractional part for the x axis
                 let xFrac = xPos - Float(xIndex)
                 
-                // Ensure index is within bounds
-                let xIndexNext = Swift.min(xIndex + 1, wTable.count - 1)
+                // Get next index with wrapping
+                let xIndexNext = (xIndex + 1) % wTable.count
                 
                 // Linear interpolation
                 return self.lerp(wTable[xIndex](pos), wTable[xIndexNext](pos), xFrac)
@@ -822,9 +934,9 @@ public enum Crvs {
                 let xFrac = xPos - Float(xIndex)
                 let yFrac = yPos - Float(yIndex)
                 
-                // Ensure indices are within bounds
-                let xIndexNext = Swift.min(xIndex + 1, wTable.count - 1)
-                let yIndexNext = Swift.min(yIndex + 1, wTable[0].count - 1)
+                // Get next index with wrapping
+                let xIndexNext = (xIndex + 1) % wTable.count
+                let yIndexNext = (yIndex + 1) % wTable[0].count
                 
                 // Bilinear interpolation
                 let v00 = wTable[xIndex][yIndex]
@@ -854,9 +966,9 @@ public enum Crvs {
                 let xFrac = xPos - Float(xIndex)
                 let yFrac = yPos - Float(yIndex)
                 
-                // Ensure indices are within bounds
-                let xIndexNext = Swift.min(xIndex + 1, wTable.count - 1)
-                let yIndexNext = Swift.min(yIndex + 1, wTable[0].count - 1)
+                // Get next index with wrapping
+                let xIndexNext = (xIndex + 1) % wTable.count
+                let yIndexNext = (yIndex + 1) % wTable[0].count
                 
                 // Bilinear interpolation
                 let v00 = wTable[xIndex][yIndex](pos)
@@ -889,10 +1001,10 @@ public enum Crvs {
                 let yFrac = yPos - Float(yIndex)
                 let zFrac = zPos - Float(zIndex)
                 
-                // Ensure indices are within bounds
-                let xIndexNext = Swift.min(xIndex + 1, wTable.count - 1)
-                let yIndexNext = Swift.min(yIndex + 1, wTable[0].count - 1)
-                let zIndexNext = Swift.min(zIndex + 1, wTable[0][0].count - 1)
+                // Get next index with wrapping
+                let xIndexNext = (xIndex + 1) % wTable.count
+                let yIndexNext = (yIndex + 1) % wTable[0].count
+                let zIndexNext = (zIndex + 1) % wTable[0][0].count
                 
                 // Trilinear interpolation
                 let v000 = wTable[xIndex][yIndex][zIndex]
@@ -934,10 +1046,10 @@ public enum Crvs {
                 let yFrac = yPos - Float(yIndex)
                 let zFrac = zPos - Float(zIndex)
                 
-                // Ensure indices are within bounds
-                let xIndexNext = Swift.min(xIndex + 1, wTable.count - 1)
-                let yIndexNext = Swift.min(yIndex + 1, wTable[0].count - 1)
-                let zIndexNext = Swift.min(zIndex + 1, wTable[0][0].count - 1)
+                // Get next index with wrapping
+                let xIndexNext = (xIndex + 1) % wTable.count
+                let yIndexNext = (yIndex + 1) % wTable[0].count
+                let zIndexNext = (zIndex + 1) % wTable[0][0].count
                 
                 // Trilinear interpolation with evaluated operations
                 let v000 = wTable[xIndex][yIndex][zIndex](pos)
@@ -1047,20 +1159,13 @@ public enum Crvs {
             }
         }
         
-        /// Creates a Perlin noise function
-        public func perlin(_ x: @escaping FloatOp, _ y: FloatOp? = nil, _ z: FloatOp? = nil,
-                           _ falloff: FloatOp? = nil, _ octaves: FloatOp? = nil) -> FloatOp {
-            let noiseSource = GKPerlinNoiseSource()
-            
+        /// Helper function to generate noise values from any GKNoiseSource
+        private func noiseHelper(source: GKNoiseSource,
+                                 x: @escaping FloatOp,
+                                 y: FloatOp? = nil,
+                                 z: FloatOp? = nil) -> FloatOp {
             return { pos in
-                // Fixed line - directly convert to Int if octaves exists, otherwise use 1
-                let lod = octaves != nil ? Int(octaves!(pos)) : 1
-                let fof = falloff?(pos) ?? 1.0
-                
-                noiseSource.persistence = Double(fof)
-                noiseSource.octaveCount = Swift.max(1, lod)
-                
-                let noise = GKNoise(noiseSource)
+                let noise = GKNoise(source)
                 
                 let xVal = x(pos)
                 
@@ -1083,6 +1188,152 @@ public enum Crvs {
                     // 1D noise - use x for both coordinates with an offset
                     return Float(noise.value(atPosition: vector_float2(xVal, xVal * 0.5)))
                 }
+            }
+        }
+        
+        /// Creates a Perlin noise function with all relevant parameters
+        public func perlin(_ x: @escaping FloatOp, _ y: FloatOp? = nil, _ z: FloatOp? = nil,
+                           _ frequency: FloatOp? = nil,      // Added frequency parameter
+                           _ roughness: FloatOp? = nil,      // renamed from persistence
+                           _ octaves: FloatOp? = nil,
+                           _ scaleJump: FloatOp? = nil,      // renamed from lacunarity
+                           _ seed: Int32 = 0) -> FloatOp {
+            
+            return { [weak self] pos in
+                guard let self = self else { return 0.0 }
+                
+                let frequencyVal = frequency?(pos) ?? 1.0    // Default but not hardcoded
+                let roughnessVal = roughness?(pos) ?? 0.5
+                let octavesVal = octaves != nil ? Int(octaves!(pos)) : 1
+                let scaleJumpVal = scaleJump?(pos) ?? 2.0
+                
+                let noiseSource = GKPerlinNoiseSource(
+                    frequency: Double(frequencyVal),         // Use the parameter value
+                    octaveCount: Swift.max(1, octavesVal),
+                    persistence: Double(roughnessVal),
+                    lacunarity: Double(scaleJumpVal),
+                    seed: seed
+                )
+                
+                return self.noiseHelper(source: noiseSource, x: x, y: y, z: z)(pos)
+            }
+        }
+        
+        /// Creates a Billow noise function (rounded shapes with clear transitions)
+        public func billow(_ x: @escaping FloatOp, _ y: FloatOp? = nil, _ z: FloatOp? = nil,
+                           _ frequency: FloatOp? = nil,      // Added frequency parameter
+                           _ roughness: FloatOp? = nil,      // renamed from persistence
+                           _ octaves: FloatOp? = nil,
+                           _ scaleJump: FloatOp? = nil,      // renamed from lacunarity
+                           _ seed: Int32 = 0) -> FloatOp {
+            
+            return { [weak self] pos in
+                guard let self = self else { return 0.0 }
+                
+                let frequencyVal = frequency?(pos) ?? 1.0    // Default but configurable
+                let roughnessVal = roughness?(pos) ?? 0.5
+                let octavesVal = octaves != nil ? Int(octaves!(pos)) : 1
+                let scaleJumpVal = scaleJump?(pos) ?? 2.0
+                
+                let noiseSource = GKBillowNoiseSource(
+                    frequency: Double(frequencyVal),         // Use the parameter value
+                    octaveCount: Swift.max(1, octavesVal),
+                    persistence: Double(roughnessVal),
+                    lacunarity: Double(scaleJumpVal),
+                    seed: seed
+                )
+                
+                return self.noiseHelper(source: noiseSource, x: x, y: y, z: z)(pos)
+            }
+        }
+        
+        /// Creates a Ridged noise function (sharp peaks)
+        public func ridged(_ x: @escaping FloatOp, _ y: FloatOp? = nil, _ z: FloatOp? = nil,
+                           _ frequency: FloatOp? = nil,      // Added frequency parameter
+                           _ octaves: FloatOp? = nil,
+                           _ scaleJump: FloatOp? = nil,      // renamed from lacunarity
+                           _ seed: Int32 = 0) -> FloatOp {
+            
+            return { [weak self] pos in
+                guard let self = self else { return 0.0 }
+                
+                let frequencyVal = frequency?(pos) ?? 1.0    // Default but configurable
+                let octavesVal = octaves != nil ? Int(octaves!(pos)) : 1
+                let scaleJumpVal = scaleJump?(pos) ?? 2.0
+                
+                let noiseSource = GKRidgedNoiseSource(
+                    frequency: Double(frequencyVal),         // Use the parameter value
+                    octaveCount: Swift.max(1, octavesVal),
+                    lacunarity: Double(scaleJumpVal),
+                    seed: seed
+                )
+                
+                return self.noiseHelper(source: noiseSource, x: x, y: y, z: z)(pos)
+            }
+        }
+        
+        /// Creates a Voronoi noise function (cellular/crystal-like structures)
+        public func voronoi(_ x: @escaping FloatOp, _ y: FloatOp? = nil, _ z: FloatOp? = nil,
+                            _ frequency: FloatOp? = nil, _ displacement: FloatOp? = nil,
+                            _ distanceEnabled: FloatOp? = nil, _ seed: Int32 = 0) -> FloatOp {
+            
+            return { [weak self] pos in
+                guard let self = self else { return 0.0 }
+                
+                let frequencyVal = frequency?(pos) ?? 1.0
+                let displacementVal = displacement?(pos) ?? 1.0
+                let distanceEnabledVal = distanceEnabled?(pos) ?? 0.5 > 0.5 // Convert to Boolean
+                
+                let noiseSource = GKVoronoiNoiseSource(
+                    frequency: Double(frequencyVal),
+                    displacement: Double(displacementVal),
+                    distanceEnabled: distanceEnabledVal,
+                    seed: seed
+                )
+                
+                return self.noiseHelper(source: noiseSource, x: x, y: y, z: z)(pos)
+            }
+        }
+        
+        /// Creates a Cylinders noise function
+        public func cylinders(_ x: @escaping FloatOp, _ y: FloatOp? = nil, _ z: FloatOp? = nil,
+                              _ frequency: FloatOp? = nil) -> FloatOp {
+            
+            return { [weak self] pos in
+                guard let self = self else { return 0.0 }
+                
+                let frequencyVal = frequency?(pos) ?? 1.0
+                let noiseSource = GKCylindersNoiseSource(frequency: Double(frequencyVal))
+                
+                return self.noiseHelper(source: noiseSource, x: x, y: y, z: z)(pos)
+            }
+        }
+        
+        /// Creates a Spheres noise function
+        public func spheres(_ x: @escaping FloatOp, _ y: FloatOp? = nil, _ z: FloatOp? = nil,
+                            _ frequency: FloatOp? = nil) -> FloatOp {
+            
+            return { [weak self] pos in
+                guard let self = self else { return 0.0 }
+                
+                let frequencyVal = frequency?(pos) ?? 1.0
+                let noiseSource = GKSpheresNoiseSource(frequency: Double(frequencyVal))
+                
+                return self.noiseHelper(source: noiseSource, x: x, y: y, z: z)(pos)
+            }
+        }
+        
+        /// Creates a Checkerboard noise function
+        public func checkerboard(_ x: @escaping FloatOp, _ y: FloatOp? = nil, _ z: FloatOp? = nil,
+                                 _ squareSize: FloatOp? = nil) -> FloatOp {
+            
+            return { [weak self] pos in
+                guard let self = self else { return 0.0 }
+                
+                let squareSizeVal = squareSize?(pos) ?? 1.0
+                let noiseSource = GKCheckerboardNoiseSource(squareSize: Double(squareSizeVal))
+                
+                return self.noiseHelper(source: noiseSource, x: x, y: y, z: z)(pos)
             }
         }
         
@@ -1670,6 +1921,979 @@ public enum Crvs {
                 // Update lastValue for the next call
                 lastValue = currentValue
                 return 0.0 // No change in direction
+            }
+        }
+        
+        // MARK: - Pitch Utilities
+        
+        /// Quantizes a value to specific musical scale
+        public func quantizeToScale(_ op: @escaping FloatOp,
+                                    _ scale: [Int] = [0,2,4,5,7,9,11]) -> FloatOp {
+            return { pos in
+                let value = op(pos)
+                // Map 0-1 to 0-12 (chromatic scale)
+                let rawNote = value * 12
+                // Find scale degree
+                let octave = Int(floor(rawNote / 12))
+                let noteInOctave = rawNote.truncatingRemainder(dividingBy: 12)
+                
+                // Find closest scale tone
+                var closestDegree = scale[0]
+                var minDistance: Float = 12
+                
+                for scaleDegree in scale {
+                    let distance = Swift.abs(Float(scaleDegree) - noteInOctave)
+                    if distance < minDistance {
+                        minDistance = distance
+                        closestDegree = scaleDegree
+                    }
+                }
+                
+                // Return normalized value
+                return (Float(octave * 12 + closestDegree) / 12)
+            }
+        }
+        
+        /// Converts normalized value to frequency in Hz with 0.5 = middle C (261.63Hz)
+        public func toFrequency(_ op: @escaping FloatOp,
+                                _ baseNote: Float = 60) -> FloatOp {
+            return { pos in
+                let noteNumber = baseNote + (op(pos) * 12)
+                // A4 (69) = 440Hz standard tuning
+                return 440.0 * pow(2, (noteNumber - 69) / 12)
+            }
+        }
+        
+        // MARK: - Rhthym Utilities
+        
+        /// Creates groove patterns with swing/humanization
+        public func groove(_ basePhasor: @escaping FloatOp,
+                           _ swingAmount: Float = 0.0,
+                           _ humanize: Float = 0.0) -> FloatOp {
+            
+            return { pos in
+                let phase = basePhasor(pos)
+                
+                // Apply swing (delay even 8th notes)
+                var swungPhase = phase
+                let isEvenEighth = (floor(phase * 8).truncatingRemainder(dividingBy: 2)) == 0
+                if isEvenEighth {
+                    // Delay even eighth notes by swingAmount
+                    swungPhase += swingAmount * 0.125 // 0.125 = 1/8 note
+                }
+                
+                // Apply humanization (random timing variation)
+                let humanized = swungPhase + (Float.random(in: -humanize...humanize) * 0.01)
+                
+                // Keep in 0-1 range
+                return humanized.truncatingRemainder(dividingBy: 1.0)
+            }
+        }
+        
+        /// Generates rhythmic patterns from binary patterns
+        public func rhythmicPattern(_ patterns: [[Int]],
+                                    _ density: @escaping FloatOp) -> FloatOp {
+            var lastPattern = [1, 0, 0, 0]
+            var lastTrigger = false
+            var patternPosition: Float = 0
+            var lastPos: Float = 0
+            
+            return { pos in
+                // Create one-shot trigger at start of pos
+                let deltaPosWrapped = pos < lastPos ? pos + 1.0 - lastPos : pos - lastPos
+                patternPosition = (patternPosition + deltaPosWrapped).truncatingRemainder(dividingBy: 1.0)
+                lastPos = pos
+                
+                // Select pattern based on density
+                let densityValue = density(pos)
+                let patternIndex = Swift.min(Int(densityValue * Float(patterns.count)), patterns.count - 1)
+                let currentPattern = patterns[patternIndex]
+                
+                // Get step in pattern
+                let step = Int(patternPosition * Float(currentPattern.count))
+                let trigger = currentPattern[step] > 0
+                
+                // Generate one-shot triggers
+                let output: Float = (trigger && !lastTrigger) ? 1.0 : 0.0
+                lastTrigger = trigger
+                
+                return output
+            }
+        }
+        
+        /// Helper function to generate Euclidean rhythms (define this BEFORE the main function)
+        private func generateEuclideanRhythm(steps: Int, pulses: Int, rotation: Int) -> [Bool] {
+            // Edge cases
+            if pulses >= steps {
+                return [Bool](repeating: true, count: steps)
+            }
+            if pulses == 0 {
+                return [Bool](repeating: false, count: steps)
+            }
+            
+            // Bjorklund's algorithm
+            var pattern = [Bool](repeating: false, count: steps)
+            let divisor = steps / pulses
+            let remainder = steps % pulses
+            
+            for i in 0..<pulses {
+                let index = i * divisor + Swift.min(i, remainder)
+                pattern[index] = true
+            }
+            
+            // Apply rotation
+            if rotation > 0 {
+                let rotatedPattern = (0..<steps).map { i in
+                    pattern[(i + steps - rotation) % steps]
+                }
+                pattern = rotatedPattern
+            }
+            
+            return pattern
+        }
+        
+        // MARK: - Delay Effects
+        
+        /// Creates a delay/echo effect with feedback
+        public func delay(_ inputOp: @escaping FloatOp,
+                          _ delayTimeSeconds: @escaping FloatOp,
+                          _ feedback: @escaping FloatOp,
+                          _ mix: @escaping FloatOp) -> FloatOp {
+            // Constants
+            let maxDelaySecs = 10.0
+            let bufferSize = 12000  // Large enough for reasonable quality
+            
+            // Initialize buffer and state
+            var buffer = [Float](repeating: 0, count: bufferSize)
+            var writeIndex = 0
+            
+            return { pos in
+                // Get input value
+                let inputValue = inputOp(pos)
+                
+                // Get parameter values
+                let delayTimeSecs = Swift.max(0.01, Swift.min(maxDelaySecs, Double(delayTimeSeconds(pos))))
+                let feedbackValue = Swift.max(0.0, Swift.min(0.99, feedback(pos)))  // Limit feedback to prevent runaway
+                let mixValue = Swift.max(0.0, Swift.min(1.0, mix(pos)))
+                
+                // Calculate read index with proper fractional position for interpolation
+                let delayInSamples = delayTimeSecs * Double(bufferSize) / maxDelaySecs
+                let readFloat = Double(writeIndex) - delayInSamples
+                
+                // Ensure the read index wraps correctly with modulo arithmetic
+                var readFloatWrapped = readFloat
+                while readFloatWrapped < 0 {
+                    readFloatWrapped += Double(bufferSize)
+                }
+                readFloatWrapped = readFloatWrapped.truncatingRemainder(dividingBy: Double(bufferSize))
+                
+                // Get integer and fractional parts for interpolation
+                let readIndex1 = Int(readFloatWrapped) % bufferSize
+                let readIndex2 = (readIndex1 + 1) % bufferSize
+                let fraction = readFloatWrapped - Double(Int(readFloatWrapped))
+                
+                // Linear interpolation between the two sample points
+                let delayedValue = buffer[readIndex1] * Float(1.0 - fraction) + buffer[readIndex2] * Float(fraction)
+                
+                // Apply feedback
+                buffer[writeIndex] = inputValue + delayedValue * feedbackValue
+                
+                // Move write index forward
+                writeIndex = (writeIndex + 1) % bufferSize
+                
+                // Mix dry and wet signals
+                return inputValue * (1.0 - mixValue) + delayedValue * mixValue
+            }
+        }
+        
+        /// Creates a tempo-synced delay effect with feedback
+        public func tempoDelay(_ inputOp: @escaping FloatOp,
+                               _ noteDivision: @escaping FloatOp, // 0.25 = quarter note, 0.5 = half note, etc.
+                               _ bpm: @escaping FloatOp,
+                               _ feedback: @escaping FloatOp,
+                               _ mix: @escaping FloatOp) -> FloatOp {
+            
+            // Create a wrapper function that calculates delay time from tempo
+            let delayTimeOp: FloatOp = { pos in
+                // Calculate delay time in seconds based on tempo and note division
+                let bpmValue = Swift.max(20.0, Swift.min(300.0, bpm(pos)))  // Reasonable BPM range
+                let divisionValue = Swift.max(0.0625, Swift.min(4.0, noteDivision(pos)))  // From 1/16 to whole note
+                
+                // Convert BPM and division to seconds
+                // Formula: (60 / BPM) * division
+                return (60.0 / bpmValue) * divisionValue
+            }
+            
+            // Use the standard delay with calculated delay time
+            return delay(inputOp, delayTimeOp, feedback, mix)
+        }
+        
+        /// Creates a multi-tap delay with variable spacing between taps
+        public func multiTapDelay(_ inputOp: @escaping FloatOp,
+                                  _ baseDelaySeconds: @escaping FloatOp,
+                                  _ tapCount: Int = 3,
+                                  _ tapSpacing: @escaping FloatOp, // Spacing multiplier between taps
+                                  _ tapDecay: @escaping FloatOp,   // How much each tap decreases in volume
+                                  _ mix: @escaping FloatOp) -> FloatOp {
+            
+            // Constants
+            let maxDelaySecs = 10.0
+            let bufferSize = 12000
+            
+            // Initialize buffer and state
+            var buffer = [Float](repeating: 0, count: bufferSize)
+            var writeIndex = 0
+            
+            return { pos in
+                // Get input value
+                let inputValue = inputOp(pos)
+                let baseDelay = baseDelaySeconds(pos)
+                let spacing = tapSpacing(pos)
+                let decay = tapDecay(pos)
+                let mixValue = mix(pos)
+                
+                // Write input to buffer
+                buffer[writeIndex] = inputValue
+                
+                // Calculate and mix all tap outputs
+                var tapsSum: Float = 0.0
+                
+                for tap in 0..<tapCount {
+                    // Calculate delay time for this tap
+                    let tapDelayTime = baseDelay * (1.0 + Float(tap) * spacing)
+                    let delayInSamples = Double(tapDelayTime) * Double(bufferSize) / maxDelaySecs
+                    
+                    // Calculate read position
+                    let readFloat = Double(writeIndex) - delayInSamples
+                    var readFloatWrapped = readFloat
+                    while readFloatWrapped < 0 {
+                        readFloatWrapped += Double(bufferSize)
+                    }
+                    readFloatWrapped = readFloatWrapped.truncatingRemainder(dividingBy: Double(bufferSize))
+                    
+                    // Interpolate between samples
+                    let readIndex1 = Int(readFloatWrapped) % bufferSize
+                    let readIndex2 = (readIndex1 + 1) % bufferSize
+                    let fraction = readFloatWrapped - Double(Int(readFloatWrapped))
+                    
+                    let delayedValue = buffer[readIndex1] * Float(1.0 - fraction) + buffer[readIndex2] * Float(fraction)
+                    
+                    // Apply tap-specific gain (decay)
+                    let tapGain = pow(1.0 - decay, Float(tap))
+                    tapsSum += delayedValue * tapGain
+                }
+                
+                // Normalize taps sum based on tap count to avoid clipping
+                let normalizedTapsSum = tapsSum / Float(tapCount)
+                
+                // Move write index forward
+                writeIndex = (writeIndex + 1) % bufferSize
+                
+                // Mix dry and wet signals
+                return inputValue * (1.0 - mixValue) + normalizedTapsSum * mixValue
+            }
+        }
+        
+        /// Creates a filter delay effect with feedback filter
+        public func filterDelay(_ inputOp: @escaping FloatOp,
+                                _ delayTimeSeconds: @escaping FloatOp,
+                                _ feedback: @escaping FloatOp,
+                                _ filterAmount: @escaping FloatOp, // 0-1, controls filter intensity
+                                _ mix: @escaping FloatOp) -> FloatOp {
+            
+            // Constants
+            let maxDelaySecs = 10.0
+            let bufferSize = 12000
+            
+            // Initialize buffer and state
+            var buffer = [Float](repeating: 0, count: bufferSize)
+            var writeIndex = 0
+            
+            // Filter state (simple one-pole lowpass)
+            var lastFilterOutput: Float = 0.0
+            
+            return { pos in
+                // Get input value
+                let inputValue = inputOp(pos)
+                
+                // Get parameter values
+                let delayTimeSecs = delayTimeSeconds(pos)
+                let feedbackValue = feedback(pos)
+                let filterValue = filterAmount(pos)
+                let mixValue = mix(pos)
+                
+                // Calculate filter coefficient based on filterAmount (0=no filtering, 1=heavy filtering)
+                let filterCoeff = 0.05 + filterValue * 0.9 // Range from slight to heavy filtering
+                
+                // Calculate read position for delay
+                let delayInSamples = Double(delayTimeSecs) * Double(bufferSize) / maxDelaySecs
+                let readFloat = Double(writeIndex) - delayInSamples
+                var readFloatWrapped = readFloat
+                while readFloatWrapped < 0 {
+                    readFloatWrapped += Double(bufferSize)
+                }
+                readFloatWrapped = readFloatWrapped.truncatingRemainder(dividingBy: Double(bufferSize))
+                
+                // Interpolate delay value
+                let readIndex1 = Int(readFloatWrapped) % bufferSize
+                let readIndex2 = (readIndex1 + 1) % bufferSize
+                let fraction = readFloatWrapped - Double(Int(readFloatWrapped))
+                
+                let delayedValue = buffer[readIndex1] * Float(1.0 - fraction) + buffer[readIndex2] * Float(fraction)
+                
+                // Apply lowpass filter to feedback signal
+                lastFilterOutput = lastFilterOutput + (delayedValue - lastFilterOutput) * filterCoeff
+                
+                // Apply feedback with filtering
+                buffer[writeIndex] = inputValue + lastFilterOutput * feedbackValue
+                
+                // Move write index forward
+                writeIndex = (writeIndex + 1) % bufferSize
+                
+                // Mix dry and wet signals
+                return inputValue * (1.0 - mixValue) + delayedValue * mixValue
+            }
+        }
+        
+        /// Creates a trigger delay that works with binary trigger signals (0.0 or 1.0)
+        public func triggerDelay(_ triggerOp: @escaping FloatOp,
+                                 _ delayTimeSeconds: @escaping FloatOp,
+                                 _ feedback: Int = 1) -> FloatOp {
+            // Store timestamp history of triggers
+            var triggerTimes: [Double] = []
+            var lastProcessTime: Double = CACurrentMediaTime()
+            var lastTriggerState: Bool = false
+            
+            return { pos in
+                let currentTime = CACurrentMediaTime()
+                let elapsedTime = currentTime - lastProcessTime
+                lastProcessTime = currentTime
+                
+                // Get current trigger state (consider values > 0.5 as "on")
+                let currentTriggerState = triggerOp(pos) > 0.5
+                
+                // Detect rising edge (new trigger)
+                if currentTriggerState && !lastTriggerState {
+                    // Add new trigger to the history
+                    triggerTimes.append(currentTime)
+                }
+                
+                // Update last trigger state
+                lastTriggerState = currentTriggerState
+                
+                // Calculate delay time in seconds
+                let delaySecs = delayTimeSeconds(pos)
+                
+                // Remove old triggers that are no longer needed
+                // (keeping those that might still produce echoes based on feedback)
+                let oldestAllowedTime = currentTime - (Double(delaySecs) * Double(feedback) + 0.1)
+                triggerTimes = triggerTimes.filter { $0 > oldestAllowedTime }
+                
+                // Check if any delayed trigger is active right now
+                for i in 0..<Swift.min(feedback, triggerTimes.count) {
+                    let triggerTime = triggerTimes[triggerTimes.count - 1 - i]
+                    let delayedTime = triggerTime + (Double(delaySecs) * Double(i + 1))
+                    
+                    // Trigger is active if we're within 10ms of the delayed time
+                    // This creates a short pulse rather than a continuous signal
+                    if currentTime >= delayedTime && currentTime < delayedTime + 0.01 {
+                        return 1.0
+                    }
+                }
+                
+                // No delayed trigger is currently active
+                return 0.0
+            }
+        }
+        
+        /// Creates rhythmic pattern delay with subdivision and probability controls
+        public func rhythmicTriggerDelay(_ triggerOp: @escaping FloatOp,
+                                         _ division: Int = 4,           // Subdivisions (e.g., 4 = 16th notes from quarter)
+                                         _ probability: @escaping FloatOp, // Probability of each subdivision triggering
+                                         _ bpm: @escaping FloatOp,      // Tempo in BPM
+                                         _ swing: Float = 0.0) -> FloatOp {
+            var lastTriggerState: Bool = false
+            var patternActive: Bool = false
+            var patternStartTime: Double = 0
+            var patternTriggers: [Bool] = []
+            
+            return { pos in
+                // Get current trigger and parameter values
+                let currentTrigger = triggerOp(pos) > 0.5
+                let currentBPM = bpm(pos)
+                let currentProb = probability(pos)
+                
+                // Calculate timing variables
+                let beatDurationSecs = 60.0 / currentBPM
+                let patternDurationSecs = beatDurationSecs
+                let stepDurationSecs = Double(patternDurationSecs) / Double(division)
+                let currentTime = CACurrentMediaTime()
+                
+                // Detect rising edge (new trigger)
+                if currentTrigger && !lastTriggerState {
+                    // Start a new pattern
+                    patternActive = true
+                    patternStartTime = currentTime
+                    
+                    // Generate the subdivision pattern with probability
+                    patternTriggers = (0..<division).map { step in
+                        // Apply swing to even-numbered subdivisions
+                        if step % 2 == 1 && swing > 0 {
+                            return Float.random(in: 0...1) < currentProb
+                        } else {
+                            return Float.random(in: 0...1) < currentProb
+                        }
+                    }
+                }
+                
+                // Update last trigger state
+                lastTriggerState = currentTrigger
+                
+                // If pattern is active, check if we're on a subdivision hit
+                if patternActive {
+                    // Calculate elapsed time in pattern
+                    let elapsedTime = currentTime - patternStartTime
+                    
+                    // Check if pattern is still active
+                    if elapsedTime > Double(patternDurationSecs) {
+                        patternActive = false
+                        return 0.0
+                    }
+                    
+                    // Calculate which step we're on
+                    var stepIndex = Int(elapsedTime / stepDurationSecs)
+                    
+                    // Apply swing to even-numbered subdivisions
+                    if stepIndex % 2 == 1 && swing > 0 {
+                        let swingOffset = stepDurationSecs * Double(swing)
+                        if elapsedTime < (Double(stepIndex) * stepDurationSecs + swingOffset) {
+                            stepIndex -= 1 // Still on previous step due to swing
+                        }
+                    }
+                    
+                    // Bound check
+                    if stepIndex >= 0 && stepIndex < division && stepIndex < patternTriggers.count {
+                        // Return 1.0 for a brief moment at the start of a subdivision hit
+                        var stepStartTime = Double(stepIndex) * stepDurationSecs
+                        // Apply swing
+                        if stepIndex % 2 == 1 && swing > 0 {
+                            stepStartTime += stepDurationSecs * Double(swing)
+                        }
+                        
+                        // Create a short 10ms pulse
+                        if elapsedTime >= stepStartTime &&
+                            elapsedTime < stepStartTime + 0.01 &&
+                            patternTriggers[stepIndex] {
+                            return 1.0
+                        }
+                    }
+                }
+                
+                return 0.0
+            }
+        }
+        
+        /// Creates Euclidean rhythm patterns from trigger inputs
+        public func euclideanTriggerDelay(_ triggerOp: @escaping FloatOp,
+                                          _ stepsParam: Int = 16,
+                                          _ pulsesOp: @escaping FloatOp,
+                                          _ rotationOp: @escaping FloatOp,
+                                          _ bpmOp: @escaping FloatOp) -> FloatOp {
+            
+            // Define these variables outside of the closure
+            var lastTrigger = false
+            var isActive = false
+            var startTime: Double = 0.0
+            var currentPattern: [Bool] = []
+            
+            // Directly implement the Euclidean algorithm instead of calling a helper
+            func euclidean(steps: Int, pulses: Int, rotate: Int) -> [Bool] {
+                if pulses >= steps { return [Bool](repeating: true, count: steps) }
+                if pulses <= 0 { return [Bool](repeating: false, count: steps) }
+                
+                var pattern = [Bool](repeating: false, count: steps)
+                let div = steps / pulses
+                let rem = steps % pulses
+                
+                for i in 0..<pulses {
+                    pattern[i * div + Swift.min(i, rem)] = true
+                }
+                
+                // Rotate pattern
+                if rotate > 0 {
+                    let r = rotate % steps
+                    return Array(pattern[r..<steps] + pattern[0..<r])
+                }
+                
+                return pattern
+            }
+            
+            // Return the basic FloatOp without type annotation
+            return { pos in
+                let now = CACurrentMediaTime()
+                let trigger = triggerOp(pos) > 0.5
+                let bpm = bpmOp(pos)
+                
+                // Trigger edge detection
+                if trigger && !lastTrigger {
+                    isActive = true
+                    startTime = now
+                    
+                    // Generate pattern
+                    let p = Swift.min(Swift.max(Int(pulsesOp(pos) * Float(stepsParam)), 1), stepsParam)
+                    let r = Int(rotationOp(pos) * Float(stepsParam)) % stepsParam
+                    currentPattern = euclidean(steps: stepsParam, pulses: p, rotate: r)
+                }
+                lastTrigger = trigger
+                
+                if !isActive { return 0.0 }
+                
+                // Calculate timing
+                let barDuration = 240.0 / bpm  // 4 beats at current tempo
+                let stepDuration = Double(barDuration) / Double(stepsParam)
+                let elapsed = now - startTime
+                
+                // Check if pattern is still active
+                if elapsed > Double(barDuration) {
+                    isActive = false
+                    return 0.0
+                }
+                
+                // Determine current step and check pattern
+                let step = Int(elapsed / stepDuration) % stepsParam
+                if step < currentPattern.count && currentPattern[step] {
+                    // Return pulse only at the beginning of the step
+                    return elapsed.truncatingRemainder(dividingBy: stepDuration) < 0.01 ? 1.0 : 0.0
+                }
+                
+                return 0.0
+            }
+        }
+        
+        /// Creates Euclidean rhythm patterns from trigger inputs
+//        public func euclideanTriggerDelay(_ triggerOp: @escaping FloatOp,
+//                                          _ steps: Int = 16,
+//                                          _ pulses: @escaping FloatOp,
+//                                          _ rotation: @escaping FloatOp,
+//                                          _ bpm: @escaping FloatOp) -> FloatOp {
+//            // Explicitly create the FloatOp we'll return
+//            let resultOp: FloatOp = { (pos: Float) -> Float in
+//                // Static state variables to keep state across function calls
+//                struct State {
+//                    static var lastTriggerState: Bool = false
+//                    static var patternActive: Bool = false
+//                    static var patternStartTime: Double = 0
+//                    static var euclideanPattern: [Bool] = []
+//                }
+//                
+//                // Get current trigger and parameter values
+//                let currentTrigger = triggerOp(pos) > 0.5
+//                let currentBPM = bpm(pos)
+//                let currentPulses = Int(max(1, min(Float(steps), pulses(pos) * Float(steps))))
+//                let currentRotation = Int(rotation(pos) * Float(steps)) % steps
+//                
+//                // Calculate timing variables
+//                let barDurationSecs = 240.0 / currentBPM // Assuming 4/4 time
+//                let stepDurationSecs = barDurationSecs / Double(steps)
+//                let currentTime = CACurrentMediaTime()
+//                
+//                // Detect rising edge (new trigger)
+//                if currentTrigger && !State.lastTriggerState {
+//                    // Start a new pattern
+//                    State.patternActive = true
+//                    State.patternStartTime = currentTime
+//                    
+//                    // Generate Euclidean rhythm (Bjorklund's algorithm)
+//                    State.euclideanPattern = generateEuclideanRhythm(steps: steps,
+//                                                                     pulses: currentPulses,
+//                                                                     rotation: currentRotation)
+//                }
+//                
+//                // Update last trigger state
+//                State.lastTriggerState = currentTrigger
+//                
+//                // If pattern is active, check if we're on a hit
+//                if State.patternActive {
+//                    // Calculate elapsed time in pattern
+//                    let elapsedTime = currentTime - State.patternStartTime
+//                    
+//                    // Check if pattern is still active (one bar)
+//                    if elapsedTime > barDurationSecs {
+//                        State.patternActive = false
+//                        return 0.0
+//                    }
+//                    
+//                    // Calculate which step we're on
+//                    let stepIndex = Int(elapsedTime / stepDurationSecs) % steps
+//                    
+//                    // Return 1.0 for a brief moment at the start of a hit
+//                    if stepIndex >= 0 && stepIndex < State.euclideanPattern.count &&
+//                        State.euclideanPattern[stepIndex] {
+//                        // Only output on the first 10ms of the step for a trigger pulse
+//                        let stepStartTime = Double(stepIndex) * stepDurationSecs
+//                        if elapsedTime >= stepStartTime && elapsedTime < stepStartTime + 0.01 {
+//                            return 1.0
+//                        }
+//                    }
+//                }
+//                
+//                return 0.0
+//            }
+//            
+//            return resultOp
+//        }
+        
+        /// Creates a polyrhythmic trigger generator from a single input
+        public func polyTriggerDelay(_ triggerOp: @escaping FloatOp,
+                                     _ rhythms: [Int] = [3, 4, 5],    // Array of different subdivisions
+                                     _ bpm: @escaping FloatOp) -> [(Int, FloatOp)] {  // Returns tuples of (rhythm, op)
+            var outputs: [(Int, FloatOp)] = []
+            
+            // Create a separate trigger output for each rhythm
+            for rhythm in rhythms {
+                let triggerOutput: FloatOp = { pos in
+                    // Implementation for each rhythm stream goes here
+                    let currentTrigger = triggerOp(pos)
+                    let currentBPM = bpm(pos)
+                    
+                    // Static variables for this closure
+                    struct State {
+                        static var lastTriggerState: [Int: Bool] = [:]
+                        static var patternActive: [Int: Bool] = [:]
+                        static var patternStartTime: [Int: Double] = [:]
+                    }
+                    
+                    // Initialize state for this rhythm if needed
+                    if State.lastTriggerState[rhythm] == nil {
+                        State.lastTriggerState[rhythm] = false
+                        State.patternActive[rhythm] = false
+                        State.patternStartTime[rhythm] = 0
+                    }
+                    
+                    // Get current trigger state
+                    let isTrigger = currentTrigger > 0.5
+                    
+                    // Detect rising edge (new trigger)
+                    if isTrigger && !(State.lastTriggerState[rhythm] ?? false) {
+                        State.patternActive[rhythm] = true
+                        State.patternStartTime[rhythm] = CACurrentMediaTime()
+                    }
+                    
+                    // Update last trigger state
+                    State.lastTriggerState[rhythm] = isTrigger
+                    
+                    // If pattern is active, check if we're at a subdivision point
+                    if State.patternActive[rhythm] ?? false {
+                        let currentTime = CACurrentMediaTime()
+                        let elapsed = currentTime - (State.patternStartTime[rhythm] ?? 0)
+                        
+                        // Calculate bar duration (4 beats)
+                        let barDuration = 240.0 / currentBPM
+                        
+                        // Calculate step duration for this rhythm
+                        let stepDuration = Double(barDuration) / Double(rhythm)
+                        
+                        // Check if we're still within the pattern
+                        if elapsed > Double(barDuration) {
+                            State.patternActive[rhythm] = false
+                            return 0.0
+                        }
+                        
+                        // Calculate current step
+                        let step = Int(elapsed / stepDuration)
+                        
+                        // Output trigger at the start of each step
+                        let stepStartTime = Double(step) * stepDuration
+                        if elapsed >= stepStartTime && elapsed < stepStartTime + 0.01 {
+                            return 1.0
+                        }
+                    }
+                    
+                    return 0.0
+                }
+                
+                outputs.append((rhythm, triggerOutput))
+            }
+            
+            return outputs
+        }
+        
+        // MARK: - Experimental
+        
+        /// Markov chain for generating sequences
+        public func markovSequence(_ transitionMatrix: [[Float]],
+                                   _ triggerOp: @escaping FloatOp) -> FloatOp {
+            var currentState = 0
+            var lastTriggerState = false
+            
+            return { pos in
+                let trigger = triggerOp(pos) > 0.5
+                
+                // On new trigger, transition to next state
+                if trigger && !lastTriggerState {
+                    // Get probabilities for current state
+                    let probs = transitionMatrix[currentState]
+                    
+                    // Generate random value
+                    let rand = Float.random(in: 0..<1)
+                    
+                    // Find next state based on cumulative probability
+                    var cumProb: Float = 0
+                    for (nextState, prob) in probs.enumerated() {
+                        cumProb += prob
+                        if rand < cumProb {
+                            currentState = nextState
+                            break
+                        }
+                    }
+                }
+                
+                lastTriggerState = trigger
+                return Float(currentState) / Float(transitionMatrix.count - 1)
+            }
+        }
+        
+        /// Pattern memory system to record and replay sequences
+        public func patternRecorder(_ inputOp: @escaping FloatOp,
+                                    _ recordTrigger: @escaping FloatOp,
+                                    _ patternLength: Float = 1.0) -> FloatOp {
+            var pattern: [Float] = []
+            var isRecording = false
+            var playbackPos: Float = 0
+            var lastRecordTrigger = false
+            
+            return { pos in
+                let record = recordTrigger(pos) > 0.5
+                
+                // Toggle recording state on trigger edge
+                if record && !lastRecordTrigger {
+                    isRecording = !isRecording
+                    if isRecording {
+                        pattern = [] // Clear pattern when starting recording
+                    }
+                }
+                lastRecordTrigger = record
+                
+                if isRecording {
+                    // Record value
+                    pattern.append(inputOp(pos))
+                    return inputOp(pos) // Pass through while recording
+                } else {
+                    // Playback mode
+                    if pattern.isEmpty {
+                        return inputOp(pos) // No pattern recorded yet
+                    }
+                    
+                    // Calculate playback position
+                    playbackPos = (pos / patternLength).truncatingRemainder(dividingBy: 1.0)
+                    let index = Int(playbackPos * Float(pattern.count)) % pattern.count
+                    
+                    return pattern[index]
+                }
+            }
+        }
+        
+        /// TuringMachine-inspired pattern locker with variable stability
+        public func patternLocker(_ sourceOp: @escaping FloatOp,
+                                  _ stabilityOp: @escaping FloatOp,
+                                  _ clockOp: @escaping FloatOp,
+                                  _ patternLength: Int = 16) -> FloatOp {
+            var pattern = [Float](repeating: 0, count: patternLength)
+            var lockStatus = [Bool](repeating: false, count: patternLength)
+            var position = 0
+            var lastClock = false
+            
+            return { pos in
+                // Check for clock pulse
+                let clock = clockOp(pos) > 0.5
+                let stability = stabilityOp(pos)
+                
+                // Advance on rising edge of clock
+                if clock && !lastClock {
+                    position = (position + 1) % patternLength
+                    
+                    // For each step, decide whether to lock it based on stability
+                    // Higher stability = more likely to stay locked
+                    for i in 0..<patternLength {
+                        if Float.random(in: 0...1) < stability {
+                            lockStatus[i] = true // Lock this step
+                        } else {
+                            lockStatus[i] = false // Unlock this step
+                        }
+                    }
+                    
+                    // Update pattern with new values for unlocked positions
+                    for i in 0..<patternLength {
+                        if !lockStatus[i] {
+                            pattern[i] = sourceOp(pos)
+                        }
+                    }
+                }
+                lastClock = clock
+                
+                // Return the current value from the pattern
+                return pattern[position]
+            }
+        }
+        
+        /// ShiftRegister with feedback and probability control
+        public func shiftRegister(_ inputOp: @escaping FloatOp,
+                                  _ clockOp: @escaping FloatOp,
+                                  _ feedbackProb: @escaping FloatOp,
+                                  _ mutation: @escaping FloatOp,
+                                  _ registerLength: Int = 8) -> FloatOp {
+            var register = [Float](repeating: 0, count: registerLength)
+            var lastClock = false
+            
+            return { pos in
+                let input = inputOp(pos)
+                let clock = clockOp(pos) > 0.5
+                let feedback = feedbackProb(pos)
+                let mutationAmt = mutation(pos)
+                
+                // On clock trigger
+                if clock && !lastClock {
+                    // Decide whether to use feedback or new input
+                    let newValue: Float
+                    if Float.random(in: 0...1) < feedback {
+                        // Use feedback from last value with possible mutation
+                        newValue = register.last! + (Float.random(in: -1...1) * mutationAmt)
+                    } else {
+                        // Use new input
+                        newValue = input
+                    }
+                    
+                    // Shift register
+                    for i in (1..<registerLength).reversed() {
+                        register[i] = register[i-1]
+                    }
+                    register[0] = newValue
+                }
+                lastClock = clock
+                
+                // Output current value from register
+                return register[0]
+            }
+        }
+        
+        /// Captures and transforms patterns with various operations
+        public func patternCapture(_ sourceOp: @escaping FloatOp,
+                                   _ captureOp: @escaping FloatOp,
+                                   _ rateOp: @escaping FloatOp,
+                                   _ transformOp: @escaping FloatOp,
+                                   _ resolution: Int = 32) -> FloatOp {
+            var buffer = [Float](repeating: 0, count: resolution)
+            var isCapturing = false
+            var lastCapture = false
+            var playbackPos: Float = 0
+            var lastPlaybackPos: Float = 0
+            
+            // Transform types: 0=normal, 1=reverse, 2=half-speed, 3=double-speed, 4=random-jump
+            
+            return { pos in
+                let capture = captureOp(pos) > 0.5
+                let rate = rateOp(pos)
+                let transform = transformOp(pos)
+                
+                // Toggle capture state on trigger
+                if capture && !lastCapture {
+                    isCapturing = !isCapturing
+                    
+                    // Reset position when starting new capture
+                    if isCapturing {
+                        playbackPos = 0
+                        lastPlaybackPos = 0
+                    }
+                }
+                lastCapture = capture
+                
+                // Update position based on rate
+                let delta = (pos - lastPlaybackPos).truncatingRemainder(dividingBy: 1.0)
+                lastPlaybackPos = pos
+                
+                // Calculate new position
+                playbackPos = (playbackPos + delta * rate).truncatingRemainder(dividingBy: 1.0)
+                
+                // If capturing, record the current input
+                if isCapturing {
+                    let index = Int(playbackPos * Float(resolution)) % resolution
+                    buffer[index] = sourceOp(pos)
+                    return sourceOp(pos) // Pass through while recording
+                }
+                
+                // Apply transform based on transformOp
+                let transformType = Int(transform * 5) % 5
+                
+                // Calculate read position based on transform
+                var readPos: Int
+                switch transformType {
+                case 1: // Reverse
+                    readPos = resolution - 1 - Int(playbackPos * Float(resolution)) % resolution
+                case 2: // Half-speed
+                    readPos = Int(playbackPos * Float(resolution) * 0.5) % resolution
+                case 3: // Double-speed
+                    readPos = Int(playbackPos * Float(resolution) * 2) % resolution
+                case 4: // Random jump (quantized)
+                    if delta > 0 && Float.random(in: 0...1) < 0.1 {
+                        readPos = Int.random(in: 0..<resolution)
+                    } else {
+                        readPos = Int(playbackPos * Float(resolution)) % resolution
+                    }
+                default: // Normal
+                    readPos = Int(playbackPos * Float(resolution)) % resolution
+                }
+                
+                // Return the value from the buffer
+                return buffer[readPos]
+            }
+        }
+        
+        /// Detects and captures interesting/repeating patterns
+        public func emergentPatternDetector(_ sourceOp: @escaping FloatOp,
+                                            _ sensitivityOp: @escaping FloatOp,
+                                            _ windowLength: Int = 32) -> FloatOp {
+            var recentValues = [Float](repeating: 0, count: windowLength * 2)
+            var capturedPattern = [Float](repeating: 0, count: windowLength)
+            var patternConfidence: Float = 0.0
+            var position = 0
+            var useCapture = false
+            
+            return { pos in
+                let currentValue = sourceOp(pos)
+                let sensitivity = sensitivityOp(pos)
+                
+                // Shift recent values
+                for i in (1..<recentValues.count).reversed() {
+                    recentValues[i] = recentValues[i-1]
+                }
+                recentValues[0] = currentValue
+                
+                // Check if the first half of recent values resembles the second half
+                // This would indicate a repeating pattern
+                var similarity: Float = 0
+                for i in 0..<windowLength {
+                    similarity += 1.0 - Swift.abs(recentValues[i] - recentValues[i + windowLength])
+                }
+                similarity /= Float(windowLength)
+                
+                // If similarity exceeds threshold, capture the pattern
+                if similarity > sensitivity && similarity > patternConfidence {
+                    patternConfidence = similarity
+                    for i in 0..<windowLength {
+                        capturedPattern[i] = recentValues[i]
+                    }
+                    
+                    // Start using captured pattern if confidence is high enough
+                    useCapture = true
+                }
+                
+                // If using captured pattern, cycle through it
+                if useCapture {
+                    position = (position + 1) % windowLength
+                    return capturedPattern[position]
+                } else {
+                    return currentValue
+                }
             }
         }
     }

@@ -94,6 +94,26 @@ extension Crvs.Ops {
         
         return result
     }
+    
+//    public func wtSIMD(_ wTable: [Float], _ count: Int) -> (simd_float4) -> simd_float4 {
+//        let tableSize = wTable.count
+//        
+//        return { positions in
+//            var result = simd_float4(repeating: 0)
+//            
+//            for i in 0..<4 {
+//                let pos = positions[i]
+//                let tablePos = pos * Float(tableSize)
+//                let index = Int(tablePos) % tableSize
+//                let frac = tablePos - Float(index)
+//                let nextIndex = (index + 1) % tableSize
+//                
+//                result[i] = mix(wTable[index], wTable[nextIndex], t: frac)
+//            }
+//            
+//            return result
+//        }
+//    }
 }
 
 // MARK: - Just-In-Time Compilation

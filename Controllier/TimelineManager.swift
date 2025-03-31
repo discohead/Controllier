@@ -33,7 +33,15 @@ import SwiftUI
         self.ticksPerBeat = ticksPerBeat
         
         // Create the timeline
-        self.timeline = Timeline(globalState: GlobalState())
+        self.timeline = Timeline(globalState: GlobalState(
+            rootNote: 60,
+            tempo: tempo,
+            density: 0.5,
+            complexity: 0.5,
+            variation: 0.3,
+            channels: [],
+            controlState: ControlState()
+        ))
         
         // Create the clock
         self.clock = CallbackClock(tempo: tempo, ticksPerBeat: ticksPerBeat)
@@ -224,7 +232,7 @@ import SwiftUI
         for _ in 0..<repeats {
             for i in 0..<count {
                 // Optional: Add some variation using the GlobalState
-                let noteProb = probability * (0.8 + (Double(timeline.globalState.someParameter) * 0.2))
+                // let noteProb = probability * (0.8 + (Double(timeline.globalState.someParameter) * 0.2))
                 
                 scheduleNote(
                     at: currentBeat,
@@ -232,7 +240,7 @@ import SwiftUI
                     velocity: vels[i],
                     duration: durs[i],
                     channel: channel,
-                    probability: noteProb,
+                    probability: 1.0,
                     condition: nil,
                     rescheduleHandler: nil
                 )

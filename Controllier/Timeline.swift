@@ -16,14 +16,6 @@ public typealias RescheduleHandler = (GlobalState, ScheduledAction) -> Scheduled
 // Typealias for ScheduledAction condition closure
 public typealias ConditionClosure = () -> Bool
 
-/// A simple global state container. You can expand this with any properties you need.
-public class GlobalState {
-    public var someParameter: Double = 0.0
-    // Add additional state properties here.
-    
-    public init() { }
-}
-
 /// An action that can be scheduled to occur at a specific musical position
 public class ScheduledAction {
     /// The beat position when this action should execute
@@ -103,7 +95,7 @@ public class Timeline {
     /// Initialize the timeline with an optional global state
     /// - Parameter globalState: The global state to use (creates a new one if nil)
     public init(globalState: GlobalState? = nil) {
-        self.globalState = globalState ?? GlobalState()
+        self.globalState = globalState ?? GlobalState(rootNote: 60, tempo: 120, density: 0.5, complexity: 0.5, variation: 0.3, channels: [], controlState: ControlState())
     }
     
     /// Update the current beat position
