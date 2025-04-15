@@ -11,30 +11,25 @@ import MIDIKitIO
 @main
 struct ControllierApp: App {
     
-    @State var midiManager = ObservableMIDIManager(
-        clientName: "ControllierMIDIManager",
-        model: "Controllier",
-        manufacturer: "JaredMcFarland"
-    )
+    @State var globalState = GlobalState()
     
-    @State var midiHelper = MIDIHelper()
+    @State var midiService = MIDIService()
     
     // Add the TimelineManager
     @State var timelineManager = TimelineManager()
     
+    
     init() {
-        // Setup MIDI
-        midiHelper.setup(midiManager: midiManager)
+        midiService.setGlobalState(globalState)
         
         // Connect timeline to MIDI helper
-        timelineManager.setMIDIHelper(midiHelper)
+        timelineManager.setMIDIService(midiService)
     }
     
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environment(midiManager)
-                .environment(midiHelper)
+                .environment(midiService)
                 .environment(timelineManager) // Make the timeline available to views
         }
     }

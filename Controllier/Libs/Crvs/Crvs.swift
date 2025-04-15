@@ -581,7 +581,7 @@ public enum Crvs {
                 }
                 
                 // Find current stage
-                var currentTime: Float = pos * totalDuration
+                let currentTime: Float = pos * totalDuration
                 var prevStage: (time: Float, level: Float) = (0, stages.first?.level ?? 0)
                 
                 for stage in stages {

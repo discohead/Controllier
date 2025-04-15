@@ -6,10 +6,11 @@
 import Foundation
 import MIDIKit
 import SwiftUI
+import Combine
 
 @Observable final class TimelineManager {
     // Components
-    private weak var midiHelper: MIDIHelper?
+    private weak var midiService: MIDIService?
     private let clock: CallbackClock
     let timeline: Timeline
     
@@ -25,10 +26,12 @@ import SwiftUI
     
     var ticksPerBeat: Int
     
+    var cancellables = Set<AnyCancellable>()
+    
     // MARK: - Initialization
     
-    init(midiHelper: MIDIHelper? = nil, tempo: Double = 120.0, ticksPerBeat: Int = 24) {
-        self.midiHelper = midiHelper
+    init(midiService: MIDIService? = nil, tempo: Double = 120.0, ticksPerBeat: Int = 24) {
+        self.midiService = midiService
         self.tempo = tempo
         self.ticksPerBeat = ticksPerBeat
         
@@ -39,9 +42,9 @@ import SwiftUI
             density: 0.5,
             complexity: 0.5,
             variation: 0.3,
-            channels: [],
-            controlState: ControlState()
-        ))
+            channels: []
+            )
+        )
         
         // Create the clock
         self.clock = CallbackClock(tempo: tempo, ticksPerBeat: ticksPerBeat)
@@ -61,18 +64,22 @@ import SwiftUI
             switch tickType {
             case .quarter:
                 // Quarter note specific processing
+                print("Quarter note tick at beat position: \(beatPosition)")
                 break
                 
             case .eighth:
                 // Eighth note specific processing
+                print("Eighth note tick at beat position: \(beatPosition)")
                 break
                 
             case .sixteenth:
                 // Sixteenth note specific processing
+                print("Sixteenth note tick at beat position: \(beatPosition)")
                 break
                 
             case .triplet:
                 // Triplet specific processing
+                print("Triplet tick at beat position: \(beatPosition)")
                 break
                 
             case .unknown:
@@ -81,8 +88,8 @@ import SwiftUI
         }
     }
     
-    func setMIDIHelper(_ midiHelper: MIDIHelper) {
-        self.midiHelper = midiHelper
+    func setMIDIService(_ midiService: MIDIService) {
+        self.midiService = midiService
     }
     
     // MARK: - Timeline Control
@@ -141,7 +148,7 @@ import SwiftUI
             let velocity = action.state["velocity"] as? UInt7 ?? velocity
             let channel = action.state["channel"] as? UInt4 ?? channel
             
-            self.midiHelper?.sendNoteOn(noteNum: note, velocity: velocity, channel: channel)
+            self.midiService?.sendNoteOn(noteNum: note, velocity: velocity, channel: channel)
         }
         
         // Schedule the note-off event
@@ -156,7 +163,7 @@ import SwiftUI
             let note = action.state["note"] as? UInt7 ?? note
             let channel = action.state["channel"] as? UInt4 ?? channel
             
-            self.midiHelper?.sendNoteOff(noteNum: note, channel: channel)
+            self.midiService?.sendNoteOff(noteNum: note, channel: channel)
         }
         
         // Add both actions to the timeline
@@ -193,7 +200,7 @@ import SwiftUI
             let value = action.state["value"] as? UInt7 ?? value
             let channel = action.state["channel"] as? UInt4 ?? channel
             
-            self.midiHelper?.sendCC(ccNum: controller, value: value, channel: channel)
+            self.midiService?.sendCC(ccNum: controller, value: value, channel: channel)
         }
         
         timeline.schedule(action: ccAction)

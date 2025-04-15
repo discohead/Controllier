@@ -82,7 +82,13 @@ public class Timeline {
     private let queue = DispatchQueue(label: "com.example.timeline")
     
     /// The global state shared between the Timeline and its actions
-    public let globalState: GlobalState
+    public let globalState: GlobalState?
+    
+    public let ops = Crvs.Ops()
+    
+    public var barsPerCycle = 4.0
+    
+    private let phasor: Crvs.FloatOp
     
     /// The current beat position in the timeline
     private var _currentBeat: Double = 0.0
@@ -92,10 +98,17 @@ public class Timeline {
         get { _currentBeat }
     }
     
+    /// Public access to the current phase position
+    /// - Returns: The current phase position as a Double
+    public var phase: Double {
+        return Double(self.phasor(Float(self._currentBeat)))
+    }
+    
     /// Initialize the timeline with an optional global state
     /// - Parameter globalState: The global state to use (creates a new one if nil)
     public init(globalState: GlobalState? = nil) {
-        self.globalState = globalState ?? GlobalState(rootNote: 60, tempo: 120, density: 0.5, complexity: 0.5, variation: 0.3, channels: [], controlState: ControlState())
+        self.globalState = globalState
+        self.phasor = ops.tempoPhasor(barsPerCycle: self.barsPerCycle, bpm: self.globalState?.tempo ?? 120.0)
     }
     
     /// Update the current beat position
@@ -149,13 +162,15 @@ public class Timeline {
             // Apply probability
             let roll = Double.random(in: 0.0...1.0)
             if roll <= action.probability {
-                action.closure(globalState, action)
+                // TODO: remove force unwrap
+                action.closure(globalState!, action)
                 processedActions.insert(actionId)
             }
             
             // Handle rescheduling if needed
             if let rescheduler = action.rescheduleHandler,
-               let newAction = rescheduler(globalState, action) {
+               // TODO: remove force unwrap
+               let newAction = rescheduler(globalState!, action) {
                 actions.append(newAction)
                 actions.sort { $0.scheduledBeat < $1.scheduledBeat }
             }
