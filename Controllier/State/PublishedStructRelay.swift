@@ -40,6 +40,18 @@ extension PublishedStructRelay<ControllerState> {
     }
 }
 
+/// A convenience extension for `PublishedStructRelay` that allows observing all controllers for a specified MIDI channel.
+extension PublishedStructRelay<ControllerState> {
+    func observeAllControllers(
+        for channel: UInt4
+    ) -> AnyPublisher<[UInt7: MIDIEvent.CC.Value], Never> {
+        publisher
+            .map { $0.allControllers(for: channel) }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+    }
+}
+
 // MARK: - PublishedStructRelay
 
 /// A helper that wraps a value-type `@Published` property and provides safe,

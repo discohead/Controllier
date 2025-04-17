@@ -7,18 +7,31 @@
 
 import Foundation
 
-public class NoteGenerator: Generator {
-    var numBeats = 16.0
+public class NoteGenerator: ObservableObject {
+    @Published var numBeats = 4.0
     
-    var beatDivision = 0.25
+    @Published var stepLength = 1.0/16.0
     
-    var op: Crvs.FloatOp?
+    @Published var trigThreshold = 0.5
     
-    public func generate(state: GlobalState, startBeat: Double) -> [Any] {
+    @Published var rotation = 0.0
+    
+    @Published var op: Crvs.FloatOp?
+    
+    private let crvs: Crvs.Ops
+    
+    public func generate(state: GlobalState, phase: Double, startBeat: Double) -> [Any] {
         print("Generating notes...")
+        var notes: [Any] = []
         let endBeat = startBeat + numBeats
-        for beat in stride(from: startBeat, to: endBeat, by: beatDivision) {
+        for beat in stride(from: startBeat, through: endBeat, by: stepLength) {
             print("Generating note at beat \(beat)")
+            if let op {
+                let trig = crvs.pulse(op, Float(trigThreshold))
+                if trig(Float(phase)) > 0 {
+                    print("Triggering note generation")
+                }
+            }
         }
         
         return []
@@ -44,6 +57,7 @@ public class NoteGenerator: Generator {
     
     public init(op: @escaping Crvs.FloatOp) {
         self.op = op
+        self.crvs = Crvs.Ops()
     }
     
 }

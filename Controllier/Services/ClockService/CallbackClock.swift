@@ -72,94 +72,57 @@ class CallbackClock {
             }
         }
         
-        // Set up sequencer for metronome
-        // sequencer.setGlobalMIDIOutput()
-        sequencer.enableLooping()
-        sequencer.setLoopInfo(Duration(beats: 1), loopCount: Int.max)
-        sequencer.setTempo(tempo)
-        
         // Create a track for our tick events
         metronomeTrack = sequencer.newTrack()
         metronomeTrack?.setMIDIOutput(callbackInstrument.midiIn)
         
         // Set up metronome events
         setupMetronomeTrack()
+        
+        // Set up sequencer for metronome
+        // sequencer.setGlobalMIDIOutput()
+        sequencer.enableLooping(Duration(beats: 4))
+        sequencer.setTempo(tempo)
     }
     
     // Set up the metronome track with different subdivision types
     private func setupMetronomeTrack() {
         guard let track = metronomeTrack else { return }
         
-        // Clear any existing events
         track.clear()
         
-        // Define note numbers for each subdivision type
-        let quarterNoteNum: MIDINoteNumber = 60 // 1/4 events
-        let eighthNoteNum: MIDINoteNumber = 61  // 1/8 events
-        let sixteenthNoteNum: MIDINoteNumber = 62 // 1/16 events
-        let tripletNoteNum: MIDINoteNumber = 63 // 1/3 events (triplets)
+        // Note numbers for each tick type
+        let quarterNoteNum: MIDINoteNumber = 60
+        let eighthNoteNum: MIDINoteNumber = 61
+        let sixteenthNoteNum: MIDINoteNumber = 62
+        let tripletNoteNum: MIDINoteNumber = 63
         
-        // Calculate total ticks in a measure (assuming 4/4 time)
-        let ticksPerMeasure = ticksPerBeat * 4
+        // Explicit positions for each subdivision in a 4/4 measure:
+        let quarterNotePositions: [Double] = [0.0, 1.0, 2.0, 3.0]
+        let eighthNotePositions: [Double] = [0.5, 1.5, 2.5, 3.5]
+        let sixteenthNotePositions: [Double] = [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75]
+        let tripletNotePositions: [Double] = [
+            1.0/3.0, 2.0/3.0,
+            1.0 + 1.0/3.0, 1.0 + 2.0/3.0,
+            2.0 + 1.0/3.0, 2.0 + 2.0/3.0,
+            3.0 + 1.0/3.0, 3.0 + 2.0/3.0
+        ]
         
-        // Add events for a full measure
-        for tick in 0..<ticksPerMeasure {
-            // Convert to 16th-note position (0-15) for easier comparison with diagram
-            let pos16th = (tick * 16) / ticksPerMeasure
-            
-            // Calculate position in beats for sequencer
-            let positionInBeats = Double(tick) / Double(ticksPerBeat)
-            
-            // Determine which subdivision this tick represents
-            // Following Vermona Random Rhythm's hierarchy
-            let noteNumber: MIDINoteNumber
-            var shouldEmit = false
-            
-            if pos16th % 4 == 0 {
-                // Quarter notes on positions 0, 4, 8, 12
-                noteNumber = quarterNoteNum
-                shouldEmit = true
-            } else if pos16th % 2 == 0 {
-                // Eighth notes on positions 2, 6, 10, 14
-                noteNumber = eighthNoteNum
-                shouldEmit = true
-            } else {
-                // Sixteenth notes on all other positions
-                noteNumber = sixteenthNoteNum
-                shouldEmit = true
-            }
-            
-            // Add the note event if this position should emit
-            if shouldEmit {
-                track.add(noteNumber: noteNumber, 
-                          velocity: 100, 
-                          position: Duration(beats: positionInBeats), 
+        // Helper to add notes
+        func addNotes(at positions: [Double], noteNumber: MIDINoteNumber) {
+            for position in positions {
+                track.add(noteNumber: noteNumber,
+                          velocity: 100,
+                          position: Duration(beats: position),
                           duration: Duration(beats: 0.01))
             }
         }
         
-        // Add triplet events (1/3 notes) - placed between quarter notes
-        // In a 4/4 measure, we have 12 triplet eighth notes (3 per beat)
-        for tripletIndex in 0..<12 {
-            // Calculate the beat and position within beat
-            let beatNumber = Double(tripletIndex / 3) // 0-3 as Double
-            let positionInBeat = Double(tripletIndex % 3) // 0-2 as Double
-            
-            // Skip triplet positions that would overlap with quarter notes
-            // In Vermona terms, we skip positions where triplet falls on a quarter note
-            if positionInBeat == 0 {
-                continue // Skip the first triplet of each beat (overlaps with quarter)
-            }
-            
-            // Calculate position in beats for sequencer
-            let positionInBeats = beatNumber + (positionInBeat * (1.0/3.0))
-            
-            // Add the triplet note event
-            track.add(noteNumber: tripletNoteNum, 
-                      velocity: 100, 
-                      position: Duration(beats: positionInBeats), 
-                      duration: Duration(beats: 0.01))
-        }
+        // Add the notes explicitly
+        addNotes(at: quarterNotePositions, noteNumber: quarterNoteNum)
+        addNotes(at: eighthNotePositions, noteNumber: eighthNoteNum)
+        addNotes(at: sixteenthNotePositions, noteNumber: sixteenthNoteNum)
+        addNotes(at: tripletNotePositions, noteNumber: tripletNoteNum)
     }
     
     // Handle a tick from the sequencer
@@ -192,6 +155,7 @@ class CallbackClock {
             
             // Start the sequencer
             sequencer.rewind()
+            sequencer.preroll()
             sequencer.play()
             
             isRunning = true

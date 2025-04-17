@@ -14,8 +14,7 @@ final class LiveViewModel: ObservableObject {
     private var liveSet: LiveSet?
     private let connection = LiveConnection()
     
-    // Reference to the TimelineManager (if needed for sync)
-    private var timelineManager: TimelineManager?
+    private var controlSystem: ControlSystem?
     
     func setupLiveConnection() async {
         do {
@@ -34,12 +33,12 @@ final class LiveViewModel: ObservableObject {
         }
     }
     
-    func setTimelineManager(_ manager: TimelineManager) {
-        self.timelineManager = manager
+    func setControlSystem(_ contolSystem: ControlSystem) {
+        self.controlSystem = contolSystem
         
         // If we already have a tempo from Live, update the TimelineManager
         if tempo > 0 {
-            timelineManager?.tempo = tempo
+            controlSystem?.globalState.tempo = tempo
         }
     }
     
@@ -59,13 +58,13 @@ final class LiveViewModel: ObservableObject {
         liveSet?.startPlaying()
         
         // Optional: Start the timeline when starting Live
-        timelineManager?.start()
+        controlSystem?.start()
     }
     
     func stopPlaying() {
         liveSet?.stopPlaying()
         
         // Optional: Stop the timeline when stopping Live
-        timelineManager?.stop()
+        controlSystem?.stop()
     }
 }

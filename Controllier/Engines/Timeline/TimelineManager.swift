@@ -36,15 +36,7 @@ import Combine
         self.ticksPerBeat = ticksPerBeat
         
         // Create the timeline
-        self.timeline = Timeline(globalState: GlobalState(
-            rootNote: 60,
-            tempo: tempo,
-            density: 0.5,
-            complexity: 0.5,
-            variation: 0.3,
-            channels: []
-            )
-        )
+        self.timeline = Timeline(globalState: GlobalState())
         
         // Create the clock
         self.clock = CallbackClock(tempo: tempo, ticksPerBeat: ticksPerBeat)
